@@ -24,7 +24,7 @@ warn()    { echo -e "${YELLOW}[idan]${RESET} $*"; }
 error()   { echo -e "${RED}[idan]${RESET} $*" >&2; }
 
 # ── Args ───────────────────────────────────────────────────────────────────────
-REPO_URL="${1:-}"
+REPO_URL="${1:-https://github.com/tobeski03/idan-engine}"
 PAIRING_TOKEN="${2:-}"
 TARGET_DIR="${3:-${HOME}/idan-engine}"
 
