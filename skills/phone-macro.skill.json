@@ -1,0 +1,35 @@
+{
+  "id": "phone_macro",
+  "name": "Phone Macro Skill",
+  "version": "1.0.0",
+  "description": "Runs safe uploaded or generated phone automation macros made from allowed building blocks.",
+  "enabled": true,
+  "toolDeclarations": [
+    {
+      "name": "run_phone_macro",
+      "description": "Run a short Android automation macro using safe building blocks. Use only when no dedicated skill is a better fit.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "steps": {
+            "type": "ARRAY",
+            "description": "Ordered macro steps. Supported action values: open_app, tap_text, tap_xy, type_text, wait, press_key, reply_notification, diagnose_ui, dump_ui.",
+            "items": {
+              "type": "OBJECT",
+              "description": "One macro step with fields matching its action."
+            }
+          }
+        },
+        "required": ["steps"]
+      }
+    },
+    {
+      "name": "list_macro_actions",
+      "description": "List the safe building blocks available to uploaded/custom macro skills.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {}
+      }
+    }
+  ]
+}

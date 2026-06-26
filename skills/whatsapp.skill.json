@@ -1,0 +1,87 @@
+{
+  "id": "whatsapp",
+  "name": "WhatsApp Skill",
+  "version": "1.0.0",
+  "description": "Open WhatsApp chats, send messages by contact name or phone number, and search inside conversations.",
+  "packageName": "com.whatsapp",
+  "enabled": true,
+  "toolDeclarations": [
+    {
+      "name": "open_whatsapp_chat",
+      "description": "Open a WhatsApp chat by contact name or international phone number.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "contactName": {
+            "type": "STRING",
+            "description": "The contact name as it appears in WhatsApp. Use this when no phone number is known."
+          },
+          "phoneNumber": {
+            "type": "STRING",
+            "description": "International phone number for wa.me, preferably including country code."
+          },
+          "prefillMessage": {
+            "type": "STRING",
+            "description": "Optional text to prefill when opening by phone number."
+          }
+        }
+      }
+    },
+    {
+      "name": "send_whatsapp_message",
+      "description": "Send a WhatsApp message to a contact. Prefer phoneNumber when available because it uses WhatsApp's direct wa.me flow; otherwise use contactName search.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "contactName": {
+            "type": "STRING",
+            "description": "The name of the contact as it appears in WhatsApp"
+          },
+          "phoneNumber": {
+            "type": "STRING",
+            "description": "International phone number, preferably including country code. Use if the user gives a number."
+          },
+          "message": {
+            "type": "STRING",
+            "description": "The message text to send"
+          },
+          "delaySeconds": {
+            "type": "NUMBER",
+            "description": "Optional delay before sending, in seconds."
+          },
+          "delayMs": {
+            "type": "NUMBER",
+            "description": "Optional delay before sending, in milliseconds."
+          },
+          "autonomous": {
+            "type": "BOOLEAN",
+            "description": "If true, the AI will automatically tap the send button. Only use this if the user has explicitly given permission or enabled global autonomy."
+          }
+        },
+        "required": ["message"]
+      }
+    },
+    {
+      "name": "search_whatsapp_chat",
+      "description": "Open a WhatsApp chat and search within that conversation.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "contactName": {
+            "type": "STRING",
+            "description": "The contact name as it appears in WhatsApp."
+          },
+          "phoneNumber": {
+            "type": "STRING",
+            "description": "International phone number for wa.me."
+          },
+          "query": {
+            "type": "STRING",
+            "description": "Text to search for inside the chat."
+          }
+        },
+        "required": ["query"]
+      }
+    }
+  ]
+}

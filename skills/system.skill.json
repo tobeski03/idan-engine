@@ -1,0 +1,24 @@
+{
+  "id": "system_hw",
+  "name": "System Hardware",
+  "description": "Control phone hardware like volume, flashlight, and battery status.",
+  "enabled": true,
+  "toolDeclarations": [
+    {
+      "name": "get_battery_status",
+      "description": "Returns the current battery level and charging status.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    },
+    {
+      "name": "run_shizuku_health_check",
+      "description": "Runs a suite of diagnostic tests to verify Shizuku and shell connectivity.",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ]
+}

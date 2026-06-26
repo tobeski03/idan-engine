@@ -1,0 +1,79 @@
+{
+  "id": "native_settings",
+  "name": "Native Device Settings",
+  "description": "Direct control over device hardware like Flashlight, WiFi, Data, and Do Not Disturb using native Android commands.",
+  "enabled": true,
+  "toolDeclarations": [
+    {
+      "name": "toggle_flashlight",
+      "description": "Turn the device flashlight (torch) on or off directly using native commands.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "state": {
+            "type": "STRING",
+            "enum": ["on", "off"],
+            "description": "State of the flashlight"
+          }
+        },
+        "required": ["state"]
+      }
+    },
+    {
+      "name": "set_volume",
+      "description": "Set the system media volume by percentage.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "percent": {
+            "type": "NUMBER",
+            "description": "Volume percentage (0-100)"
+          }
+        },
+        "required": ["percent"]
+      }
+    },
+    {
+      "name": "set_wifi",
+      "description": "Enable or disable WiFi connectivity.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "enabled": {
+            "type": "BOOLEAN",
+            "description": "True to enable, False to disable"
+          }
+        },
+        "required": ["enabled"]
+      }
+    },
+    {
+      "name": "set_mobile_data",
+      "description": "Enable or disable mobile data connectivity.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "enabled": {
+            "type": "BOOLEAN",
+            "description": "True to enable, False to disable"
+          }
+        },
+        "required": ["enabled"]
+      }
+    },
+    {
+      "name": "set_dnd",
+      "description": "Toggle Do Not Disturb (DND) mode.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "enabled": {
+            "type": "BOOLEAN",
+            "description": "True to enable (Zen Mode), False to disable"
+          }
+        },
+        "required": ["enabled"]
+      }
+    }
+  ]
+}

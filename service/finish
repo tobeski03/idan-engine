@@ -1,0 +1,23 @@
+#!/data/data/com.termux/files/usr/bin/sh
+# runit finish script for idan-engine
+# Called by runit after the run script exits (crash or intentional stop).
+# $1 = exit code of run script, $2 = exit signal (if any)
+
+EXIT_CODE="${1:-0}"
+EXIT_SIGNAL="${2:--1}"
+
+SCRIPT_REAL="$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")"
+ENGINE_DIR="$(dirname "$(dirname "${SCRIPT_REAL}")")"
+LOG="${ENGINE_DIR}/engine.log"
+
+echo "[$(date -Iseconds)] idan-engine exited (code=${EXIT_CODE} signal=${EXIT_SIGNAL}) — cooling down 5s" >> "${LOG}"
+
+# If the exit code is 0, it was a clean stop — do not restart
+if [ "${EXIT_CODE}" -eq 0 ]; then
+  echo "[$(date -Iseconds)] Clean stop detected — disabling service to prevent restart." >> "${LOG}"
+  sv down idan-engine 2>/dev/null || true
+  exit 0
+fi
+
+# On crash: sleep briefly before runit re-spawns the run script
+sleep 5

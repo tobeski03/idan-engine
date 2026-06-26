@@ -1,0 +1,76 @@
+{
+  "id": "youtube",
+  "name": "YouTube Fast Controls",
+  "version": "1.0.0",
+  "description": "Fast YouTube automation using Android intents, media keys, uidump selectors, and learned reusable UI patterns.",
+  "enabled": true,
+  "packageName": "com.google.android.youtube",
+  "toolDeclarations": [
+    {
+      "name": "youtube_search",
+      "description": "Open YouTube and search for a video, song, artist, channel, or topic. Optionally play the first visible result.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "query": {
+            "type": "STRING",
+            "description": "Search query to type into YouTube."
+          },
+          "playFirst": {
+            "type": "BOOLEAN",
+            "description": "Whether to tap the first playable visible result after searching. Defaults to true."
+          }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "youtube_play_pause",
+      "description": "Toggle play/pause in YouTube using Android media controls. Use for play, pause, resume, or stop current playback.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "desiredState": {
+            "type": "STRING",
+            "description": "Optional requested state.",
+            "enum": ["toggle", "play", "pause"]
+          }
+        }
+      }
+    },
+    {
+      "name": "youtube_share_current",
+      "description": "Open the share sheet for the current YouTube video using uidump selectors.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {}
+      }
+    },
+    {
+      "name": "youtube_comment_current",
+      "description": "Open comments for the current YouTube video and type a comment. Does not submit automatically unless submit is true.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "comment": {
+            "type": "STRING",
+            "description": "Comment text to type."
+          },
+          "submit": {
+            "type": "BOOLEAN",
+            "description": "Whether to submit/send the comment after typing. Defaults to false for safety."
+          }
+        },
+        "required": ["comment"]
+      }
+    },
+    {
+      "name": "youtube_observe_screen",
+      "description": "Inspect the current YouTube screen with uidump and remember visible controls for faster future actions.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {}
+      }
+    }
+  ]
+}

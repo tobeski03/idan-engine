@@ -1,0 +1,2148 @@
+const fs = require('fs');
+const http = require('http');
+const path = require('path');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+const { createVerify, randomUUID } = require('crypto');
+
+const execFileAsync = promisify(execFile);
+
+// Load environment variables from .env file if it exists
+try {
+  const envPath = path.join(__dirname, '.env');
+  if (fs.existsSync(envPath)) {
+    const envContent = fs.readFileSync(envPath, 'utf8');
+    envContent.split(/\r?\n/).forEach((line) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) return;
+      const index = trimmed.indexOf('=');
+      if (index === -1) return;
+      const key = trimmed.slice(0, index).trim();
+      let value = trimmed.slice(index + 1).trim();
+      // Remove surrounding quotes if any
+      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+        value = value.slice(1, -1);
+      }
+      if (key && process.env[key] === undefined) {
+        process.env[key] = value;
+      }
+    });
+  }
+} catch (error) {
+  console.error('Error loading .env file:', error);
+}
+
+const PORT = Number(process.env.IDAN_ENGINE_PORT || 3788);
+const HOST = process.env.IDAN_ENGINE_HOST || '0.0.0.0'; // Listen on all interfaces to accept connections from emulator/network
+const VERSION = process.env.IDAN_ENGINE_VERSION || '0.2.0';
+
+// ── Runtime config — populated by the APK during pairing, never written to disk
+// Nothing here is hardcoded. The APK holds company values and injects them
+// over the local IPC handshake. On engine restart the APK re-sends on reconnect.
+const engineConfig = {
+  backendApiBaseUrl: null, // injected by APK at pair time
+  geminiModel: null,       // injected by APK at pair time
+  googleClientId: null,    // injected by APK at pair time
+};
+
+// ── License system ───────────────────────────────────────────────────────
+// Public key only — the matching private key lives exclusively on the backend.
+// Someone lifting this code gets the public key, which cannot forge tokens.
+// Revoke any install by refusing to issue new tokens from the backend.
+const LICENSE_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEZvEXKJ1T1NM+0G+PZb/+LB3CQvO7
+2UlA2Hu5RqUuhJy1lnmVbmtnHIiyk3HKzD+IXPwYNCc0X27i9hp2iHDWTg==
+-----END PUBLIC KEY-----`;
+
+// In-memory only — wiped on every restart, re-established by APK re-pairing
+const licenseState = {
+  licensed: false,
+  expiresAt: 0,
+  installId: null, // populated from state on load
+};
+const DATA_DIR = __dirname;
+const STATE_FILE = path.join(DATA_DIR, 'engine-state.json');
+const MEMORY_FILE = path.join(DATA_DIR, 'memory.json');
+const TASKS_FILE = path.join(DATA_DIR, 'recurring-tasks.json');
+const REMINDERS_FILE = path.join(DATA_DIR, 'reminders.json');
+const PLANS_FILE = path.join(DATA_DIR, 'plans.json');
+const CONNECTORS_FILE = path.join(DATA_DIR, 'connectors.json');
+const GOOGLE_AUTH_FILE = path.join(DATA_DIR, 'google-auth.json');
+const EMAIL_WATCH_FILE = path.join(DATA_DIR, 'email-watch.json');
+const CHATS_FILE = path.join(DATA_DIR, 'chats.json');
+const LOG_FILE = path.join(DATA_DIR, 'engine.log');
+
+const startedAt = Date.now();
+const jobs = new Map();
+const recurringTimers = new Map();
+const CONNECTOR_LABELS = {
+  gmail: 'Gmail',
+  'google-docs': 'Google Docs',
+  'google-sheets': 'Google Sheets',
+  'google-forms': 'Google Forms',
+  'mail-watch': 'Mail watch',
+};
+const CHAT_SYSTEM_PROMPT = 'You are Idan, a friendly Gemini-powered Android assistant. Keep replies concise, useful, and natural. Use the conversation history as context.';
+
+function readJsonFile(file, fallback) {
+  try {
+    if (!fs.existsSync(file)) return fallback;
+    return JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return fallback;
+  }
+}
+
+function writeJsonFile(file, value) {
+  fs.writeFileSync(file, JSON.stringify(value, null, 2));
+}
+
+function appendLog(line) {
+  const entry = `[${new Date().toISOString()}] ${line}`;
+  fs.appendFileSync(LOG_FILE, `${entry}\n`);
+}
+
+function loadState() {
+  const state = readJsonFile(STATE_FILE, { token: null, installId: null });
+  return {
+    token: typeof state.token === 'string' ? state.token : null,
+    installId: typeof state.installId === 'string' ? state.installId : null,
+  };
+}
+
+function saveState(nextState) {
+  writeJsonFile(STATE_FILE, nextState);
+}
+
+let state = loadState();
+
+// Generate a stable install ID on first boot and persist it
+if (!state.installId) {
+  state.installId = randomUUID();
+  saveState(state);
+  appendLog(`generated new installId: ${state.installId}`);
+}
+licenseState.installId = state.installId;
+let memory = readJsonFile(MEMORY_FILE, []);
+let recurringTasks = readJsonFile(TASKS_FILE, []);
+let reminders = readJsonFile(REMINDERS_FILE, []);
+let plans = readJsonFile(PLANS_FILE, []);
+let connectors = readJsonFile(CONNECTORS_FILE, []);
+let googleAuth = readJsonFile(GOOGLE_AUTH_FILE, {
+  accessToken: '',
+  refreshToken: '',
+  expiryMs: 0,
+  email: '',
+  clientId: '',
+  apiBaseUrl: '',
+  androidClientId: '',
+});
+let emailWatchRules = readJsonFile(EMAIL_WATCH_FILE, []);
+let chats = readJsonFile(CHATS_FILE, { threads: {} });
+
+const SKILLS_DIR = path.join(DATA_DIR, 'skills');
+let skills = [];
+
+function loadSkills() {
+  try {
+    if (!fs.existsSync(SKILLS_DIR)) {
+      return [];
+    }
+    const files = fs.readdirSync(SKILLS_DIR);
+    const loaded = [];
+    for (const file of files) {
+      if (file.endsWith('.skill.json')) {
+        const filePath = path.join(SKILLS_DIR, file);
+        const content = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        loaded.push(content);
+      }
+    }
+    appendLog(`loaded ${loaded.length} skills`);
+    return loaded;
+  } catch (error) {
+    appendLog(`error loading skills: ${error.message}`);
+    return [];
+  }
+}
+
+function getAllToolDeclarations() {
+  const tools = [];
+  for (const skill of skills) {
+    if (skill.enabled === false) continue;
+    if (Array.isArray(skill.toolDeclarations)) {
+      tools.push(...skill.toolDeclarations);
+    }
+  }
+  return tools;
+}
+
+skills = loadSkills();
+
+
+function json(res, statusCode, payload) {
+  const body = JSON.stringify(payload);
+  res.writeHead(statusCode, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+  });
+  res.end(body);
+}
+
+// ── License verification ────────────────────────────────────────────────
+// Token format: base64url(JSON payload) + "." + base64url(ECDSA-P256 signature)
+// Backend signs with the private key; engine verifies with the public key only.
+function verifyLicenseToken(token) {
+  try {
+    const dot = token.lastIndexOf('.');
+    if (dot < 1) return null;
+
+    const payloadB64 = token.slice(0, dot);
+    const signatureB64 = token.slice(dot + 1);
+
+    // Verify ECDSA signature using the embedded public key
+    const verifier = createVerify('SHA256');
+    verifier.update(Buffer.from(payloadB64));
+    const valid = verifier.verify(
+      LICENSE_PUBLIC_KEY,
+      Buffer.from(signatureB64, 'base64url')
+    );
+    if (!valid) return null;
+
+    // Decode and validate payload
+    const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
+    const nowSec = Math.floor(Date.now() / 1000);
+
+    if (typeof payload.exp !== 'number' || nowSec > payload.exp) return null;   // expired
+    if (typeof payload.iat !== 'number' || nowSec < payload.iat - 300) return null; // future-dated (clock skew tolerance)
+    if (payload.installId && payload.installId !== licenseState.installId) return null; // wrong device
+
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function snapshot() {
+  return {
+    ok: true,
+    version: VERSION,
+    state: state.token ? 'running' : 'starting',
+    licensed: licenseState.licensed,
+    installId: licenseState.installId, // needed by APK to fetch a license token
+    uptimeMs: Date.now() - startedAt,
+    jobCount: jobs.size,
+    memoryCount: memory.length,
+    reminderCount: reminders.length,
+    recurringTaskCount: recurringTasks.length,
+    planCount: plans.length,
+    connectorCount: connectors.length,
+    chatThreadCount: Object.keys(chats.threads || {}).length,
+  };
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (chunk) => {
+      data += chunk;
+      if (data.length > 1024 * 1024) {
+        reject(new Error('Request too large'));
+        req.destroy();
+      }
+    });
+    req.on('end', () => {
+      if (!data) return resolve({});
+      try {
+        resolve(JSON.parse(data));
+      } catch (error) {
+        reject(error);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+function normalizeText(value) {
+  return String(value || '').trim();
+}
+
+function cleanKey(value) {
+  return normalizeText(value)
+    .toLowerCase()
+    .replace(/[^a-z0-9:_-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 90);
+}
+
+function formatMemory(record) {
+  const value = typeof record.value === 'string' ? record.value : JSON.stringify(record.value);
+  const compactValue = value.length > 600 ? `${value.slice(0, 600)}...(shortened)` : value;
+  return `${record.kind}:${record.key} - ${compactValue}`;
+}
+
+function createJob(taskName, args) {
+  const id = `job_${Math.random().toString(36).slice(2, 10)}`;
+  const job = {
+    id,
+    taskName,
+    args: args || {},
+    state: 'queued',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  jobs.set(id, job);
+  appendLog(`queued job ${id} (${taskName})`);
+
+  setTimeout(() => {
+    const current = jobs.get(id);
+    if (!current) return;
+    current.state = 'completed';
+    current.updatedAt = Date.now();
+    jobs.set(id, current);
+    appendLog(`completed job ${id}`);
+  }, 1200);
+
+  return job;
+}
+
+function isAuthorized(req) {
+  const token = req.headers['x-idan-token'];
+  return Boolean(state.token) && token === state.token;
+}
+
+function requireAuth(req, res, payload) {
+  if (isAuthorized(req)) return true;
+  json(res, 401, {
+    v: 1,
+    id: payload.id || null,
+    ok: false,
+    error: {
+      code: 'UNAUTHORIZED',
+      message: 'Invalid or missing pairing token',
+    },
+  });
+  return false;
+}
+
+function saveAll() {
+  saveState(state);
+  writeJsonFile(MEMORY_FILE, memory);
+  writeJsonFile(TASKS_FILE, recurringTasks);
+  writeJsonFile(REMINDERS_FILE, reminders);
+  writeJsonFile(PLANS_FILE, plans);
+  writeJsonFile(CONNECTORS_FILE, connectors);
+  writeJsonFile(GOOGLE_AUTH_FILE, googleAuth);
+  writeJsonFile(EMAIL_WATCH_FILE, emailWatchRules);
+  writeJsonFile(CHATS_FILE, chats);
+}
+
+function normalizeThreadId(value) {
+  const id = normalizeText(value);
+  return id || `chat_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function getChatThread(threadId) {
+  const id = normalizeThreadId(threadId);
+  const thread = chats.threads[id];
+  if (!thread) return null;
+  return {
+    id,
+    title: thread.title || 'Chat',
+    createdAt: thread.createdAt,
+    updatedAt: thread.updatedAt,
+    messages: Array.isArray(thread.messages) ? thread.messages : [],
+  };
+}
+
+function listChatThreads() {
+  return Object.entries(chats.threads).map(([id, thread]) => ({
+    id,
+    title: thread.title || 'Chat',
+    createdAt: thread.createdAt,
+    updatedAt: thread.updatedAt,
+    messageCount: Array.isArray(thread.messages) ? thread.messages.length : 0,
+  }));
+}
+
+function upsertChatThread(threadId, title = 'Chat') {
+  const id = normalizeThreadId(threadId);
+  if (!chats.threads[id]) {
+    chats.threads[id] = {
+      id,
+      title: normalizeText(title) || 'Chat',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      messages: [],
+    };
+  }
+  return chats.threads[id];
+}
+
+function appendChatMessage(threadId, role, content, parts) {
+  const thread = upsertChatThread(threadId);
+  const message = {
+    id: `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    role,
+    content: content ? normalizeText(content) : '',
+    parts: parts || [{ text: normalizeText(content) }],
+    createdAt: Date.now(),
+  };
+  thread.messages.push(message);
+  thread.messages = thread.messages.slice(-50);
+  thread.updatedAt = Date.now();
+  chats.threads[thread.id] = thread;
+  saveAll();
+  return message;
+}
+
+function clearChatThread(threadId) {
+  const id = normalizeThreadId(threadId);
+  if (!chats.threads[id]) return false;
+  delete chats.threads[id];
+  saveAll();
+  return true;
+}
+
+function inferChatReply(message, thread = null) {
+  const text = normalizeText(message);
+  const lower = text.toLowerCase();
+  if (!text) return 'Send a message and I will respond with a local engine reply.';
+  if (lower.includes('help') || lower.includes('what can you do')) {
+    return 'I can chat, store memory, create plans and reminders, run tasks, search, and sync connectors. Ask me to do one of those.';
+  }
+  if (lower.includes('status') || lower.includes('health')) {
+    const current = snapshot();
+    return `Engine is ${current.state} with ${current.jobCount} jobs, ${current.memoryCount} memory items, and ${current.connectorCount} connectors.`;
+  }
+  if (lower.includes('connect')) {
+    return 'I can help connect Gmail, Docs, Sheets, Forms, and mail watch through the engine. Use the connector actions from the dashboard.';
+  }
+  if (lower.includes('remind')) {
+    return 'I can create reminders and recurring tasks. Tell me the title and due time, and I will queue it in the engine.';
+  }
+  if (lower.includes('search')) {
+    return 'I can search the web from the engine. Give me a query and I will return a short result summary.';
+  }
+  if (thread && Array.isArray(thread.messages) && thread.messages.length > 1) {
+    const previous = thread.messages.slice(-3).filter((entry) => entry.role === 'user').map((entry) => entry.content).join(' | ');
+    if (previous) {
+      return `Got it. You just said: "${text}". I am keeping the conversation local and can turn this into a task, reminder, search, or connector action.`;
+    }
+  }
+  return `Local engine reply: "${text}". I can turn that into a task, search, memory item, reminder, or connector sync.`;
+}
+
+function rememberRecord(record) {
+  const next = {
+    id: `mem_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    kind: normalizeText(record.kind || 'fact'),
+    key: cleanKey(record.key || 'note'),
+    value: record.value,
+    confidence: Number.isFinite(Number(record.confidence)) ? Number(record.confidence) : 0.85,
+    source: normalizeText(record.source || 'engine'),
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  memory.push(next);
+  saveAll();
+  return next;
+}
+
+function searchMemory(query, limit = 20, kind) {
+  const q = normalizeText(query).toLowerCase();
+  const max = Math.max(1, Math.min(50, Number(limit) || 20));
+  return memory
+    .filter((record) => {
+      if (kind && record.kind !== kind) return false;
+      if (!q) return true;
+      return [record.kind, record.key, JSON.stringify(record.value)].join(' ').toLowerCase().includes(q);
+    })
+    .slice(0, max);
+}
+
+function forgetMemory(query, kind) {
+  const before = memory.length;
+  const q = normalizeText(query).toLowerCase();
+  memory = memory.filter((record) => {
+    if (kind && record.kind !== kind) return true;
+    if (!q) return true;
+    return ![record.kind, record.key, JSON.stringify(record.value)].join(' ').toLowerCase().includes(q);
+  });
+  const removed = before - memory.length;
+  if (removed > 0) saveAll();
+  return removed;
+}
+
+function forgetMemoryByKey(kind, key) {
+  const before = memory.length;
+  const cleaned = cleanKey(key);
+  memory = memory.filter((record) => !(record.kind === kind && record.key === cleaned));
+  const removed = before - memory.length;
+  if (removed > 0) saveAll();
+  return removed;
+}
+
+function createPlan(args) {
+  const plan = {
+    id: `plan_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    title: normalizeText(args.title || 'Plan'),
+    items: Array.isArray(args.items) ? args.items.map((item) => normalizeText(item)).filter(Boolean) : [],
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    status: normalizeText(args.status || 'active'),
+  };
+  plans.unshift(plan);
+  plans = plans.slice(0, 100);
+  saveAll();
+  return plan;
+}
+
+function upsertConnector(type, config = {}) {
+  const id = normalizeText(config.id) || `${type}_${Math.random().toString(36).slice(2, 8)}`;
+  const next = {
+    id,
+    type,
+    label: normalizeText(config.label || type),
+    status: normalizeText(config.status || 'configured'),
+    config,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    lastSyncAt: config.lastSyncAt || null,
+  };
+
+  const index = connectors.findIndex((connector) => connector.id === id);
+  if (index >= 0) connectors[index] = next;
+  else connectors.push(next);
+
+  connectors = connectors.slice(-100);
+  saveAll();
+  return next;
+}
+
+function touchConnector(id, patch = {}) {
+  const index = connectors.findIndex((connector) => connector.id === id);
+  if (index < 0) return null;
+  const next = {
+    ...connectors[index],
+    ...patch,
+    updatedAt: Date.now(),
+  };
+  connectors[index] = next;
+  saveAll();
+  return next;
+}
+
+function listConnectors(type) {
+  return type ? connectors.filter((connector) => connector.type === type) : connectors;
+}
+
+function normalizeGoogleAuthState(next = {}) {
+  const expiryMs = Number(next.expiryMs || 0);
+  return {
+    accessToken: normalizeText(next.accessToken || ''),
+    refreshToken: normalizeText(next.refreshToken || ''),
+    expiryMs: Number.isFinite(expiryMs) && expiryMs > 0 ? expiryMs : 0,
+    email: normalizeText(next.email || '').toLowerCase(),
+    clientId: normalizeText(next.clientId || ''),
+    apiBaseUrl: normalizeText(next.apiBaseUrl || ''),
+    androidClientId: normalizeText(next.androidClientId || ''),
+  };
+}
+
+function saveGoogleAuthState(next = {}) {
+  googleAuth = normalizeGoogleAuthState({ ...googleAuth, ...next });
+  saveAll();
+  return googleAuth;
+}
+
+function clearGoogleAuthState() {
+  googleAuth = normalizeGoogleAuthState();
+  saveAll();
+  return googleAuth;
+}
+
+function getGoogleAuthStatus() {
+  const expiryMs = Number(googleAuth.expiryMs || 0);
+  const expiresInMs = expiryMs > 0 ? expiryMs - Date.now() : null;
+  return {
+    connected: Boolean(googleAuth.accessToken || googleAuth.refreshToken),
+    email: googleAuth.email || '',
+    hasAccessToken: Boolean(googleAuth.accessToken),
+    hasRefreshToken: Boolean(googleAuth.refreshToken),
+    expiryMs: expiryMs > 0 ? expiryMs : 0,
+    expiresInMs: typeof expiresInMs === 'number' ? expiresInMs : null,
+    apiBaseUrl: googleAuth.apiBaseUrl || '',
+    clientId: googleAuth.clientId || googleAuth.androidClientId || '',
+  };
+}
+
+function getBackendApiBaseUrl() {
+  return normalizeText(googleAuth.apiBaseUrl || engineConfig.backendApiBaseUrl || '');
+}
+
+async function refreshGoogleAccessToken() {
+  const refreshToken = normalizeText(googleAuth.refreshToken);
+  if (!refreshToken) return null;
+
+  const clientId = normalizeText(
+    googleAuth.clientId ||
+      googleAuth.androidClientId ||
+      engineConfig.googleClientId ||
+      ''
+  );
+
+  if (!clientId) {
+    throw new Error('Google refresh token is saved, but no client id is configured.');
+  }
+
+  const params = new URLSearchParams({
+    client_id: clientId,
+    refresh_token: refreshToken,
+    grant_type: 'refresh_token',
+  });
+
+  const response = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: params.toString(),
+  });
+  const json = await response.json().catch(() => ({}));
+  if (!response.ok || !json.access_token) {
+    throw new Error(json?.error_description || json?.error || `Google refresh failed ${response.status}`);
+  }
+
+  const expiryMs = Number.isFinite(Number(json.expires_in)) && Number(json.expires_in) > 0
+    ? Date.now() + Number(json.expires_in) * 1000
+    : Date.now() + 3600 * 1000;
+
+  saveGoogleAuthState({
+    accessToken: String(json.access_token),
+    expiryMs,
+    clientId,
+  });
+
+  return String(json.access_token);
+}
+
+async function ensureGoogleAccessToken() {
+  const expiryMs = Number(googleAuth.expiryMs || 0);
+  const token = normalizeText(googleAuth.accessToken);
+  if (token && (!expiryMs || Date.now() < expiryMs - 60_000)) {
+    return token;
+  }
+
+  const refreshed = await refreshGoogleAccessToken();
+  if (refreshed) return refreshed;
+  if (token) return token;
+
+  throw new Error('Google is not connected. Save Google auth state first.');
+}
+
+async function googleApiFetch(apiBaseUrl, pathSuffix, options = {}) {
+  const token = await ensureGoogleAccessToken();
+  const response = await fetch(`${apiBaseUrl}${pathSuffix}`, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      Accept: 'application/json',
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(options.headers || {}),
+    },
+  });
+  const json = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(json?.error?.message || `Google API error ${response.status}`);
+  }
+  return json;
+}
+
+function chatContentFromMessage(message) {
+  return {
+    role: message.role === 'assistant' ? 'model' : message.role === 'function' ? 'function' : 'user',
+    parts: message.parts || [{ text: normalizeText(message.content) }],
+  };
+}
+
+async function generateGeminiReply(thread) {
+  const apiBaseUrl = getBackendApiBaseUrl();
+  if (!apiBaseUrl) {
+    throw new Error('Engine config not received yet. The Android app must complete pairing before chat is available.');
+  }
+
+  const googleAccessToken = await ensureGoogleAccessToken();
+  const history = Array.isArray(thread?.messages) ? thread.messages.slice(-20).filter((message) => message.role === 'user' || message.role === 'assistant' || message.role === 'function') : [];
+  const contents = history.map((message) => chatContentFromMessage(message));
+
+  const declarations = getAllToolDeclarations();
+  const toolsPayload = declarations.length > 0 ? [{ functionDeclarations: declarations }] : undefined;
+
+  const response = await fetch(`${apiBaseUrl}/api/gemini/generate`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: engineConfig.geminiModel,
+      systemInstruction: CHAT_SYSTEM_PROMPT,
+      contents,
+      tools: toolsPayload,
+      googleAccessToken,
+    }),
+  });
+
+  const json = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(json?.error?.message || json?.error || `Gemini backend error ${response.status}`);
+  }
+
+  return {
+    text: normalizeText(json.text || ''),
+    functionCalls: json.functionCalls || [],
+    raw: json,
+  };
+}
+
+function utf8ToBase64Url(value) {
+  return Buffer.from(String(value || ''), 'utf8')
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+function decodeBase64Url(value) {
+  const normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+  const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+  return Buffer.from(padded, 'base64').toString('utf8');
+}
+
+function emailWatchRuleSummary(rule) {
+  const mode = rule.mode || 'gmail_query';
+  const time = rule.time || '08:00';
+  const terms = Array.isArray(rule.matchTerms) && rule.matchTerms.length ? ` terms=${rule.matchTerms.join(',')}` : '';
+  return `${rule.id}: ${rule.title || 'Email watch'} [${mode}] ${rule.enabled ? 'enabled' : 'disabled'} @ ${time}${terms}${rule.query ? ` query=${rule.query}` : ''}`;
+}
+
+function upsertEmailWatchRule(rule) {
+  const normalized = {
+    id: normalizeText(rule.id || rule.ruleId || '') || `gmail_watch_${Date.now()}`,
+    title: normalizeText(rule.title || 'Email watch') || 'Email watch',
+    query: normalizeText(rule.query || ''),
+    matchTerms: Array.isArray(rule.matchTerms)
+      ? rule.matchTerms.map((item) => normalizeText(item)).filter(Boolean)
+      : [],
+    time: normalizeText(rule.time || '08:00') || '08:00',
+    enabled: rule.enabled !== false,
+    mode: normalizeText(rule.mode || 'gmail_query'),
+  };
+  const index = emailWatchRules.findIndex((item) => item.id === normalized.id);
+  if (index >= 0) emailWatchRules[index] = normalized;
+  else emailWatchRules.push(normalized);
+  emailWatchRules = emailWatchRules.slice(-200);
+  saveAll();
+  return normalized;
+}
+
+function listEmailWatchRules() {
+  return emailWatchRules;
+}
+
+function cancelEmailWatchRule(ruleId) {
+  const before = emailWatchRules.length;
+  emailWatchRules = emailWatchRules.filter((rule) => rule.id !== ruleId);
+  const removed = before - emailWatchRules.length;
+  if (removed > 0) saveAll();
+  return removed > 0;
+}
+
+async function checkEmailWatchRuleNow(ruleId) {
+  const rule = emailWatchRules.find((item) => item.id === ruleId);
+  if (!rule) return { notified: false, matchedCount: 0, message: 'No matching email watch rule found.' };
+
+  if (!rule.enabled) {
+    return { notified: false, matchedCount: 0, message: `Email watch "${rule.title}" is disabled.` };
+  }
+
+  const gmail = await gmailListMessages({
+    query: rule.query || rule.matchTerms.join(' '),
+    limit: 5,
+  });
+  const matchedCount = gmail.messages.length;
+  const message = matchedCount > 0
+    ? `Checked Gmail for "${rule.title}" and found ${matchedCount} matching message${matchedCount === 1 ? '' : 's'}.`
+    : `Checked Gmail for "${rule.title}" and found no matches.`;
+  return { notified: matchedCount > 0, matchedCount, message, messages: gmail.messages };
+}
+
+async function gmailListMessages({ query = '', limit = 10 } = {}) {
+  const params = new URLSearchParams({ maxResults: String(Math.max(1, Math.min(20, Number(limit) || 10))) });
+  if (normalizeText(query)) params.set('q', normalizeText(query));
+  const list = await googleApiFetch('https://gmail.googleapis.com/gmail/v1/users/me', `/messages?${params.toString()}`);
+  const messages = await Promise.all((list.messages || []).slice(0, Number(params.get('maxResults') || 10)).map(async (item) => {
+    const details = await gmailGetMessage(item.id, 'metadata');
+    return details;
+  }));
+  return { list, messages };
+}
+
+async function gmailGetMessage(messageId, format = 'metadata') {
+  const params = new URLSearchParams({ format });
+  if (format === 'metadata') {
+    params.append('metadataHeaders', 'From');
+    params.append('metadataHeaders', 'Subject');
+    params.append('metadataHeaders', 'Date');
+  }
+  return googleApiFetch('https://gmail.googleapis.com/gmail/v1/users/me', `/messages/${encodeURIComponent(messageId)}?${params.toString()}`);
+}
+
+async function gmailSendMessage(args = {}) {
+  return googleApiFetch('https://gmail.googleapis.com/gmail/v1/users/me', '/messages/send', {
+    method: 'POST',
+    body: JSON.stringify({ raw: buildRawEmail(args) }),
+  });
+}
+
+async function gmailCreateDraft(args = {}) {
+  return googleApiFetch('https://gmail.googleapis.com/gmail/v1/users/me', '/drafts', {
+    method: 'POST',
+    body: JSON.stringify({ message: { raw: buildRawEmail(args) } }),
+  });
+}
+
+function gmailHeader(headers = [], name) {
+  return headers.find((entry) => String(entry.name || '').toLowerCase() === String(name || '').toLowerCase())?.value || '';
+}
+
+function gmailPlainTextBody(message) {
+  const walk = (part) => {
+    if (!part) return '';
+    if (part.mimeType === 'text/plain' && part.body?.data) return decodeBase64Url(part.body.data);
+    for (const child of part.parts || []) {
+      const found = walk(child);
+      if (found) return found;
+    }
+    if (part.body?.data) return decodeBase64Url(part.body.data);
+    return '';
+  };
+  return walk(message.payload || {}).trim();
+}
+
+function buildRawEmail(args = {}) {
+  const to = normalizeText(args.to);
+  const subject = normalizeText(args.subject);
+  const body = normalizeText(args.body);
+  const cc = normalizeText(args.cc);
+  const bcc = normalizeText(args.bcc);
+  if (!to || !subject || !body) {
+    throw new Error('Email needs to, subject, and body.');
+  }
+
+  const headers = [
+    `To: ${to}`,
+    cc ? `Cc: ${cc}` : '',
+    bcc ? `Bcc: ${bcc}` : '',
+    `Subject: ${subject}`,
+    'MIME-Version: 1.0',
+    'Content-Type: text/plain; charset="UTF-8"',
+  ].filter(Boolean);
+
+  return utf8ToBase64Url(`${headers.join('\r\n')}\r\n\r\n${body}`);
+}
+
+function documentIdFrom(value) {
+  const trimmed = normalizeText(value);
+  const match = trimmed.match(/\/document\/d\/([a-zA-Z0-9-_]+)/);
+  return match?.[1] || trimmed;
+}
+
+function spreadsheetIdFrom(value) {
+  const trimmed = normalizeText(value);
+  const match = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+  return match?.[1] || trimmed;
+}
+
+function formIdFrom(value) {
+  const trimmed = normalizeText(value);
+  const match = trimmed.match(/\/forms\/d\/([a-zA-Z0-9-_]+)/);
+  return match?.[1] || trimmed;
+}
+
+async function docsApi(pathSuffix, options = {}) {
+  return googleApiFetch('https://docs.googleapis.com/v1/documents', pathSuffix, options);
+}
+
+async function sheetsApi(pathSuffix, options = {}) {
+  return googleApiFetch('https://sheets.googleapis.com/v4/spreadsheets', pathSuffix, options);
+}
+
+async function formsApi(pathSuffix, options = {}) {
+  return googleApiFetch('https://forms.googleapis.com/v1/forms', pathSuffix, options);
+}
+
+function extractGoogleDocText(doc) {
+  const chunks = [];
+  for (const item of doc.body?.content || []) {
+    for (const element of item.paragraph?.elements || []) {
+      const content = element.textRun?.content;
+      if (content) chunks.push(content);
+    }
+  }
+  return chunks.join('').trim();
+}
+
+function appendGoogleDocIndex(doc) {
+  const endIndexes = (doc.body?.content || []).map((item) => item.endIndex || 0).filter((index) => index > 1);
+  return Math.max(1, ...endIndexes) - 1;
+}
+
+async function createGoogleDoc(args = {}) {
+  const title = normalizeText(args.title);
+  const body = normalizeText(args.body);
+  if (!title) throw new Error('Document title missing.');
+  const doc = await docsApi('', {
+    method: 'POST',
+    body: JSON.stringify({ title }),
+  });
+  if (body) {
+    await docsApi(`/${encodeURIComponent(doc.documentId)}:batchUpdate`, {
+      method: 'POST',
+      body: JSON.stringify({
+        requests: [{
+          insertText: {
+            location: { index: 1 },
+            text: body,
+          },
+        }],
+      }),
+    });
+  }
+  return doc;
+}
+
+async function createGoogleSheet(args = {}) {
+  const title = normalizeText(args.title);
+  const sheetTitle = normalizeText(args.sheetTitle || 'Sheet1') || 'Sheet1';
+  if (!title) throw new Error('Spreadsheet title missing.');
+  return sheetsApi('', {
+    method: 'POST',
+    body: JSON.stringify({
+      properties: { title },
+      sheets: [{ properties: { title: sheetTitle } }],
+    }),
+  });
+}
+
+function normalizeFormQuestions(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const question = item;
+      const title = normalizeText(question.title);
+      const type = normalizeText(question.type);
+      if (!title) return null;
+      if (!['short_answer', 'paragraph', 'multiple_choice', 'checkbox', 'dropdown', 'scale', 'date', 'time'].includes(type)) return null;
+      return {
+        title,
+        type,
+        required: Boolean(question.required),
+        helpText: normalizeText(question.helpText || ''),
+        options: Array.isArray(question.options) ? question.options.map((option) => normalizeText(option)).filter(Boolean) : [],
+        shuffle: Boolean(question.shuffle),
+        scaleLow: Number.isFinite(Number(question.scaleLow)) ? Number(question.scaleLow) : undefined,
+        scaleHigh: Number.isFinite(Number(question.scaleHigh)) ? Number(question.scaleHigh) : undefined,
+        lowLabel: normalizeText(question.lowLabel || ''),
+        highLabel: normalizeText(question.highLabel || ''),
+        includeTime: question.includeTime == null ? undefined : Boolean(question.includeTime),
+        includeYear: question.includeYear == null ? undefined : Boolean(question.includeYear),
+      };
+    })
+    .filter(Boolean);
+}
+
+function buildFormQuestionRequest(question, index) {
+  const item = {
+    title: question.title,
+    questionItem: {
+      question: {
+        required: Boolean(question.required),
+        ...(question.helpText ? { helpText: question.helpText } : {}),
+      },
+    },
+  };
+
+  switch (question.type) {
+    case 'short_answer':
+      item.questionItem.question.textQuestion = { paragraph: false };
+      break;
+    case 'paragraph':
+      item.questionItem.question.textQuestion = { paragraph: true };
+      break;
+    case 'multiple_choice':
+    case 'checkbox':
+    case 'dropdown': {
+      const options = (question.options || []).filter(Boolean).map((option) => ({ value: option }));
+      if (options.length === 0) throw new Error(`Question "${question.title}" needs at least one option.`);
+      item.questionItem.question.choiceQuestion = {
+        type: question.type === 'multiple_choice' ? 'RADIO' : question.type === 'checkbox' ? 'CHECKBOX' : 'DROP_DOWN',
+        options,
+        shuffle: Boolean(question.shuffle),
+      };
+      break;
+    }
+    case 'scale': {
+      const low = Number.isFinite(question.scaleLow) ? Number(question.scaleLow) : 1;
+      const high = Number.isFinite(question.scaleHigh) ? Number(question.scaleHigh) : 5;
+      if (high <= low) throw new Error(`Question "${question.title}" needs scaleHigh > scaleLow.`);
+      item.questionItem.question.scaleQuestion = {
+        low: Math.floor(low),
+        high: Math.floor(high),
+        ...(question.lowLabel ? { lowLabel: question.lowLabel } : {}),
+        ...(question.highLabel ? { highLabel: question.highLabel } : {}),
+      };
+      break;
+    }
+    case 'date':
+      item.questionItem.question.dateQuestion = {
+        ...(question.includeTime != null ? { includeTime: Boolean(question.includeTime) } : {}),
+        ...(question.includeYear != null ? { includeYear: Boolean(question.includeYear) } : {}),
+      };
+      break;
+    case 'time':
+      item.questionItem.question.timeQuestion = {};
+      break;
+    default:
+      throw new Error(`Unsupported question type: ${question.type}`);
+  }
+
+  return {
+    createItem: {
+      item,
+      location: { index: index + 1 },
+    },
+  };
+}
+
+async function createGoogleForm(args = {}) {
+  const title = normalizeText(args.title);
+  if (!title) throw new Error('Form title is required.');
+
+  const form = await formsApi(`?${new URLSearchParams({ unpublished: String(Boolean(args.unpublished)) }).toString()}`, {
+    method: 'POST',
+    body: JSON.stringify({
+      info: {
+        title,
+        ...(normalizeText(args.documentTitle) ? { documentTitle: normalizeText(args.documentTitle) } : {}),
+      },
+    }),
+  });
+
+  const questions = normalizeFormQuestions(args.questions);
+  if (questions.length > 0) {
+    const requests = questions.map((question, index) => buildFormQuestionRequest(question, index));
+    await formsApi(`/${encodeURIComponent(form.formId)}:batchUpdate`, {
+      method: 'POST',
+      body: JSON.stringify({ includeFormInResponse: true, requests }),
+    });
+  }
+
+  return form;
+}
+
+function describeConnectorType(type) {
+  return CONNECTOR_LABELS[type] || type.replace(/[-_]+/g, ' ');
+}
+
+function buildProviderConnectorConfig(type, args = {}) {
+  const authState = normalizeText(args.authState || 'pending');
+  const syncState = normalizeText(args.syncState || 'pending');
+  const capabilities = Array.isArray(args.capabilities) ? args.capabilities.map((item) => normalizeText(item)).filter(Boolean) : [];
+
+  return {
+    ...args,
+    providerType: type,
+    authState,
+    syncState,
+    capabilities,
+  };
+}
+
+function removeConnector(id) {
+  const before = connectors.length;
+  connectors = connectors.filter((connector) => connector.id !== id);
+  const removed = before - connectors.length;
+  if (removed > 0) saveAll();
+  return removed;
+}
+
+function listPlans() {
+  return plans;
+}
+
+function createReminder(args) {
+  const reminder = {
+    id: `rem_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    title: normalizeText(args.title),
+    dueAt: Number(args.dueAt),
+    notes: args.notes ? normalizeText(args.notes) : undefined,
+    recurrence: ['daily', 'weekly'].includes(args.recurrence) ? args.recurrence : 'once',
+    createdAt: Date.now(),
+  };
+  reminders.push(reminder);
+  reminders = reminders.slice(-200);
+  saveAll();
+  return reminder;
+}
+
+function listReminders(includePast = false) {
+  const now = Date.now();
+  return reminders
+    .filter((reminder) => includePast || Number(reminder.dueAt) >= now)
+    .sort((a, b) => Number(a.dueAt) - Number(b.dueAt));
+}
+
+function cancelReminder(args) {
+  const id = normalizeText(args.id);
+  const title = normalizeText(args.title).toLowerCase();
+  const before = reminders.length;
+  reminders = reminders.filter((reminder) => {
+    if (id && reminder.id === id) return false;
+    if (title && reminder.title.toLowerCase().includes(title)) return false;
+    return true;
+  });
+  const removed = before - reminders.length;
+  if (removed > 0) saveAll();
+  return removed;
+}
+
+function scheduleRecurringTask(args) {
+  const task = {
+    id: `rt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+    description: normalizeText(args.description),
+    intervalMs: Math.max(60000, Number(args.intervalMs) || 60000),
+    jsScript: normalizeText(args.jsScript),
+    shellCommand: normalizeText(args.shellCommand),
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    active: true,
+  };
+  recurringTasks.push(task);
+  recurringTasks = recurringTasks.slice(-100);
+  saveAll();
+  return task;
+}
+
+function cancelRecurringTask(taskId) {
+  const before = recurringTasks.length;
+  recurringTasks = recurringTasks.filter((task) => task.id !== taskId);
+  const removed = before - recurringTasks.length;
+  const timer = recurringTimers.get(taskId);
+  if (timer) {
+    clearInterval(timer);
+    recurringTimers.delete(taskId);
+  }
+  if (removed > 0) saveAll();
+  return removed;
+}
+
+function ensureRecurringTimers() {
+  for (const task of recurringTasks) {
+    if (recurringTimers.has(task.id)) continue;
+    const timer = setInterval(() => {
+      appendLog(`recurring task tick ${task.id}`);
+      if (task.shellCommand) {
+        execFileAsync('sh', ['-lc', task.shellCommand], { cwd: DATA_DIR }).catch((error) => {
+          appendLog(`recurring task ${task.id} failed: ${error.message}`);
+        });
+      }
+    }, task.intervalMs);
+    recurringTimers.set(task.id, timer);
+  }
+}
+
+async function executeShell(command) {
+  let cmd = 'sh';
+  let args = ['-lc', command];
+
+  if (process.platform === 'win32') {
+    const androidCmds = ['dumpsys', 'getprop', 'termux-flashlight', 'termux-wifi-enable', 'termux-volume', 'am', 'pm', 'cmd', 'svc'];
+    const firstWord = command.split(' ')[0];
+    if (androidCmds.includes(firstWord)) {
+      cmd = 'adb';
+      args = ['shell', command];
+    } else {
+      cmd = 'cmd.exe';
+      args = ['/c', command];
+    }
+  }
+
+  const { stdout } = await execFileAsync(cmd, args, {
+    cwd: DATA_DIR,
+    maxBuffer: 1024 * 1024 * 8,
+  });
+  return String(stdout || '');
+}
+
+async function visitWebsite(url, headers = {}) {
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent':
+        'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Mobile Safari/537.36',
+      'Accept-Language': 'en-US,en;q=0.9',
+      ...headers,
+    },
+  });
+  const text = await response.text();
+  return text;
+}
+
+function summarizeText(text) {
+  return normalizeText(text).replace(/\s+/g, ' ').slice(0, 1200);
+}
+
+function decodeHtmlEntities(text) {
+  return String(text)
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>');
+}
+
+function cleanPageText(html) {
+  return decodeHtmlEntities(html)
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, ' ')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseDuckDuckGoResults(html) {
+  const results = [];
+  const blocks = String(html).split(/<tr|<div[^>]*class="[^"]*result[^"]*"/gi);
+  for (const block of blocks) {
+    const linkMatch =
+      block.match(/class=['"]result-link['"][^>]*href=['"]([^'"]+)['"][^>]*>([\s\S]*?)<\/a>/i) ||
+      block.match(/<a[^>]*href=['"]([^'"]+)['"][^>]*>([\s\S]*?)<\/a>/i);
+    if (!linkMatch) continue;
+
+    const url = linkMatch[1].includes('uddg=')
+      ? decodeURIComponent(linkMatch[1].split('uddg=')[1].split('&')[0])
+      : linkMatch[1];
+    const title = linkMatch[2].replace(/<[^>]*>/g, '').trim();
+    if (!title || title.toLowerCase().includes('sign in')) continue;
+    results.push({
+      title,
+      url: url.startsWith('//') ? `https:${url}` : url,
+    });
+    if (results.length >= 6) break;
+  }
+  return results;
+}
+
+async function handleSearch(query) {
+  const q = normalizeText(query);
+  if (!q) return 'Missing query';
+
+  const variants = [
+    `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(q)}`,
+    `https://www.bing.com/search?q=${encodeURIComponent(q)}`,
+    `https://www.google.com/search?q=${encodeURIComponent(q)}&gbv=1`,
+  ];
+
+  let html = '';
+  for (const url of variants) {
+    try {
+      html = await visitWebsite(url);
+      if (html) break;
+    } catch {
+      // try next engine
+    }
+  }
+
+  if (!html) return `Search failed for "${q}".`;
+
+  const results = parseDuckDuckGoResults(html);
+  if (results.length === 0) {
+    const cleanText = cleanPageText(html);
+    return cleanText ? `Search results for "${q}":\n\n${cleanText.slice(0, 1800)}` : `No clear search results for "${q}".`;
+  }
+
+  return `Search results for "${q}":\n\n${results
+    .map((result, index) => `${index + 1}. ${result.title}\n${result.url}`)
+    .join('\n\n')}`;
+}
+
+function handleWhatsApp(args) {
+  const phoneNumber = normalizeText(args.phoneNumber);
+  const contactName = normalizeText(args.contactName);
+  const message = normalizeText(args.message);
+  const query = phoneNumber || contactName;
+  return {
+    action: 'open-url',
+    url: phoneNumber
+      ? `https://wa.me/${phoneNumber.replace(/\D/g, '')}${message ? `?text=${encodeURIComponent(message)}` : ''}`
+      : `https://wa.me/?text=${encodeURIComponent(message || query || '')}`,
+    note: phoneNumber || contactName ? 'Use the generated link in the Android app or browser.' : 'No target provided.',
+  };
+}
+
+function handleYouTube(args) {
+  const query = normalizeText(args.query || args.url || '');
+  return {
+    action: 'open-url',
+    url: query.startsWith('http') ? query : `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`,
+  };
+}
+
+function createConnectorMessage(type, args) {
+  const label = normalizeText(args.label || describeConnectorType(type));
+  const connector = upsertConnector(type, {
+    ...args,
+    label,
+    status: normalizeText(args.status || 'configured'),
+    config: buildProviderConnectorConfig(type, args),
+  });
+  return {
+    connector,
+    message: `${label} connector profile saved locally. Provider auth and sync still need wiring.`,
+  };
+}
+
+function connectorJob(type, args) {
+  const job = createJob(type, args);
+  return {
+    job,
+    message: `${describeConnectorType(type)} request queued.`,
+  };
+}
+
+function syncProviderConnectors(type, args = {}) {
+  const now = Date.now();
+  const matched = listConnectors(type).map((connector) =>
+    touchConnector(connector.id, {
+      status: normalizeText(args.status || 'synced'),
+      lastSyncAt: now,
+      config: {
+        ...connector.config,
+        lastSyncAt: now,
+        syncNote: normalizeText(args.note || ''),
+      },
+    })
+  );
+
+  return {
+    synced: matched.filter(Boolean).length,
+    connectors: matched.filter(Boolean),
+  };
+}
+
+function getBatteryStatus() {
+  return executeShell('dumpsys battery').catch((error) => `Battery query failed: ${error.message}`);
+}
+
+function healthCheck() {
+  return Promise.all([
+    executeShell('whoami').catch((error) => `whoami failed: ${error.message}`),
+    executeShell('uptime').catch((error) => `uptime failed: ${error.message}`),
+  ]).then(([whoami, uptime]) => ({
+    whoami: summarizeText(whoami),
+    uptime: summarizeText(uptime),
+  }));
+}
+
+function safeEval(code, ctx) {
+  const vm = require('vm');
+  const sandbox = {
+    ctx,
+    console,
+    JSON,
+    Date,
+    Math,
+    Promise,
+    setTimeout,
+    clearTimeout,
+  };
+  vm.createContext(sandbox);
+  const script = new vm.Script(`(async () => { ${code}\n})()`);
+  return script.runInContext(sandbox, { timeout: 5000 });
+}
+
+function buildBridgeContext() {
+  return {
+    executeShell,
+    delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    showToast: (msg) => {
+      appendLog(`toast: ${msg}`);
+      return msg;
+    },
+    remember: async (record) => rememberRecord(record),
+    searchMemory: async (query, limit) => searchMemory(query, limit),
+    forgetMemory: async (kind, key) => forgetMemoryByKey(kind, key),
+    forgetMemoryWhere: async (query, kind) => forgetMemory(query, kind),
+    getBatteryStatus,
+    healthCheck,
+    visitWebsite,
+    searchWeb: handleSearch,
+  };
+}
+
+async function handleCommand(command, args, req, payload) {
+  switch (command) {
+    // Gmail aliases
+    case 'list_gmail_messages':
+      return handleCommand('gmail_list', args, req, payload);
+    case 'read_gmail_message':
+      return handleCommand('gmail_read', args, req, payload);
+    case 'send_gmail_email':
+      return handleCommand('gmail_send', args, req, payload);
+    case 'create_gmail_draft':
+    case 'gmail_draft':
+    case 'gmail_create_draft':
+      return {
+        message: 'Gmail draft created.',
+        draft: await gmailCreateDraft(args),
+      };
+
+    // YouTube aliases
+    case 'youtube_search':
+      return handleCommand('search_youtube', args, req, payload);
+
+    // Basic Device aliases
+    case 'get_device_status':
+      return {
+        ok: true,
+        battery: await getBatteryStatus().catch(() => 'unknown'),
+        storage: '50GB / 128GB (mock)',
+        network: 'Connected (mock)'
+      };
+    case 'get_storage_status':
+      return { storage: '50GB / 128GB (mock)' };
+    case 'get_network_status':
+      return { network: 'Wi-Fi active, LTE standby (mock)' };
+    case 'search_installed_apps':
+      return {
+        apps: [
+          { name: 'WhatsApp', package: 'com.whatsapp' },
+          { name: 'YouTube', package: 'com.google.android.youtube' },
+          { name: 'Chrome', package: 'com.android.chrome' },
+          { name: 'Settings', package: 'com.android.settings' }
+        ].filter(app => app.name.toLowerCase().includes(String(args.query || '').toLowerCase()))
+      };
+    case 'open_app_by_package':
+      return { action: 'open-app', packageName: args.packageName };
+    case 'open_app_by_name':
+      return { action: 'open-app', query: args.query };
+    case 'open_app_info':
+      return { action: 'open-app-info', packageName: args.packageName };
+    case 'open_android_settings':
+      return { action: 'open-settings', page: args.page };
+    case 'wake_screen':
+      return { action: 'wake-screen' };
+    case 'share_text':
+      return { action: 'share-text', text: args.text };
+
+    // Basic Phone aliases
+    case 'search_contacts':
+      return {
+        contacts: [
+          { name: 'John Doe', phone: '+15551234567' },
+          { name: 'Jane Smith', phone: '+15557654321' }
+        ].filter(c => c.name.toLowerCase().includes(String(args.query || '').toLowerCase()))
+      };
+    case 'check_contact_exists':
+      return { exists: true };
+    case 'get_recent_missed_calls':
+      return { calls: [] };
+    case 'open_contact':
+      return { action: 'open-contact', query: args.query };
+    case 'open_dialer':
+      return { action: 'open-dialer', phoneNumber: args.phoneNumber };
+    case 'open_sms_composer':
+      return { action: 'open-sms', phoneNumber: args.phoneNumber, body: args.body };
+
+    // Native Settings aliases
+    case 'toggle_flashlight':
+      {
+        const state = args.state || 'on';
+        const isOn = state === 'on';
+        await executeShell(`am broadcast -a miui.intent.action.TOGGLE_TORCH --ez state ${isOn}`).catch(() => {});
+        await executeShell(`termux-flashlight ${state}`).catch(() => {});
+        return { action: 'toggle-flashlight', state };
+      }
+    case 'set_volume':
+      {
+        const pct = Number(args.percent || args.level || 50);
+        const level15 = Math.round((pct / 100) * 15);
+        await executeShell(`termux-volume music ${level15}`).catch(() => {});
+        await executeShell(`cmd audio volume set-volume 3 ${level15}`).catch(() => {});
+        return { action: 'set-volume', stream: args.stream, level: args.level, percent: pct };
+      }
+    case 'set_wifi':
+      {
+        const enabled = Boolean(args.enabled);
+        await executeShell(`termux-wifi-enable ${enabled}`).catch(() => {});
+        await executeShell(`svc wifi ${enabled ? 'enable' : 'disable'}`).catch(() => {});
+        return { action: 'set-wifi', enabled };
+      }
+    case 'set_mobile_data':
+      {
+        const enabled = Boolean(args.enabled);
+        await executeShell(`svc data ${enabled ? 'enable' : 'disable'}`).catch(() => {});
+        return { action: 'set-mobile-data', enabled };
+      }
+    case 'set_dnd':
+      {
+        const enabled = Boolean(args.enabled);
+        await executeShell(`cmd notification set_dnd_zen ${enabled ? 1 : 0}`).catch(() => {});
+        return { action: 'set-dnd', enabled };
+      }
+
+    // Notifications aliases
+    case 'configure_notification_auto_reply':
+    case 'show_notification_auto_reply':
+    case 'clear_notification_auto_reply':
+    case 'list_notifications':
+    case 'open_notification':
+    case 'reply_to_latest_notification':
+    case 'open_notification_settings':
+      return { action: 'notification-action', command, args };
+
+    // Phone Macro aliases
+    case 'list_macro_actions':
+      return { actions: [] };
+
+    // Self-Improving App Navigator aliases
+    case 'open_demo_overlay_settings':
+    case 'show_demo_overlay':
+    case 'hide_demo_overlay':
+    case 'start_app_demonstration':
+    case 'finish_app_demonstration':
+    case 'observe_current_screen':
+    case 'capture_visible_text':
+    case 'connect_linkedin_profile':
+    case 'learn_app_procedure':
+    case 'list_learned_app_procedures':
+    case 'delete_learned_app_procedure':
+    case 'run_learned_app_procedure':
+      return { action: 'navigator-action', command, args };
+
+    // YouTube control aliases
+    case 'youtube_play_pause':
+    case 'youtube_share_current':
+    case 'youtube_comment_current':
+    case 'youtube_observe_screen':
+      return { action: 'youtube-action', command, args };
+
+    case 'health':
+    case 'status':
+      return snapshot();
+    case 'version':
+      return { version: VERSION };
+    case 'pair': {
+      // Verify license token before accepting the pair
+      const licenseToken = normalizeText(args.licenseToken || '');
+      const licensePayload = licenseToken ? verifyLicenseToken(licenseToken) : null;
+
+      if (!licensePayload) {
+        appendLog('pair rejected: invalid or missing license token');
+        return {
+          paired: false,
+          licensed: false,
+          error: 'License token is missing, invalid, or expired. The app must provide a valid token.',
+        };
+      }
+
+      // License is valid — activate engine
+      licenseState.licensed = true;
+      licenseState.expiresAt = licensePayload.exp * 1000;
+      appendLog(`license accepted, expires ${new Date(licenseState.expiresAt).toISOString()}`);
+
+      state = { ...state, token: normalizeText(args.token) || null };
+      saveState(state);
+
+      // Accept company config from the APK — held in memory only, never persisted
+      if (args.config && typeof args.config === 'object') {
+        if (args.config.backendApiBaseUrl) engineConfig.backendApiBaseUrl = normalizeText(args.config.backendApiBaseUrl).replace(/\/+$/, '');
+        if (args.config.geminiModel)      engineConfig.geminiModel      = normalizeText(args.config.geminiModel);
+        if (args.config.googleClientId)   engineConfig.googleClientId   = normalizeText(args.config.googleClientId);
+        appendLog('engine config received from APK (memory only)');
+      }
+
+      appendLog('paired');
+      return { paired: true, licensed: true, expiresAt: licenseState.expiresAt };
+    }
+    case 'getLogs':
+      return { lines: fs.existsSync(LOG_FILE) ? fs.readFileSync(LOG_FILE, 'utf8').split('\n').filter(Boolean).slice(-200) : [] };
+    case 'runTask':
+      return { job: createJob(normalizeText(args.taskName) || 'generic-task', args) };
+    case 'listJobs':
+      return { jobs: Array.from(jobs.values()) };
+    case 'update':
+      if (!fs.existsSync(path.join(DATA_DIR, '.git'))) {
+        return { output: 'Engine repo is not a git checkout yet. Clone the engine repo in Termux, then run update again.' };
+      }
+      try {
+        const { stdout } = await execFileAsync('git', ['-C', DATA_DIR, 'pull', '--rebase'], {
+          cwd: DATA_DIR,
+          maxBuffer: 1024 * 1024 * 4,
+        });
+        return { output: summarizeText(stdout) };
+      } catch (error) {
+        return { output: `git pull failed: ${error.message}` };
+      }
+    case 'remember':
+    case 'remember_user_fact':
+      return { record: rememberRecord(args) };
+    case 'show_memory':
+    case 'show_user_memory':
+      return { records: searchMemory(args.query || '', args.limit || 20, args.kind) };
+    case 'forget_memory':
+    case 'forget_user_memory':
+      return { removed: forgetMemory(args.query || '', args.kind) };
+    case 'forget_memory_by_key':
+      return { removed: forgetMemoryByKey(normalizeText(args.kind || 'fact'), normalizeText(args.key || '')) };
+    case 'create_plan':
+      return { plan: createPlan(args) };
+    case 'list_plans':
+      return { plans: listPlans() };
+    case 'configure_connector':
+      return { connector: upsertConnector(normalizeText(args.type || 'generic'), args) };
+    case 'list_connectors':
+      return { connectors: listConnectors(normalizeText(args.type || '')) };
+    case 'remove_connector':
+      return { removed: removeConnector(normalizeText(args.id || '')) };
+    case 'gmail_connect':
+      if (args.accessToken || args.refreshToken) {
+        saveGoogleAuthState({
+          accessToken: args.accessToken,
+          refreshToken: args.refreshToken,
+          expiryMs: args.expiryMs || args.expiresAt || 0,
+          email: args.email || googleAuth.email,
+          clientId: args.clientId || googleAuth.clientId,
+          apiBaseUrl: args.apiBaseUrl || googleAuth.apiBaseUrl,
+          androidClientId: args.androidClientId || googleAuth.androidClientId,
+        });
+      }
+      return {
+        connector: upsertConnector('gmail', {
+          ...args,
+          label: normalizeText(args.label || args.email || 'Gmail'),
+          status: 'configured',
+          config: {
+            ...args,
+            authState: getGoogleAuthStatus().connected ? 'connected' : 'missing',
+            syncState: 'idle',
+          },
+        }),
+        auth: getGoogleAuthStatus(),
+      };
+    case 'gmail_send':
+      return {
+        message: 'Gmail send queued.',
+        sent: await gmailSendMessage(args),
+      };
+    case 'gmail_list':
+      return gmailListMessages({
+        query: args.query || '',
+        limit: args.limit || 10,
+      });
+    case 'gmail_read':
+      {
+        let messageId = normalizeText(args.messageId || args.id || '');
+        if (!messageId && normalizeText(args.query || '')) {
+          const found = await gmailListMessages({ query: args.query, limit: 1 });
+          messageId = found.messages[0]?.id || '';
+        }
+        if (!messageId) throw new Error('Provide a Gmail messageId or query.');
+        return {
+          message: await gmailGetMessage(messageId, 'full'),
+        };
+      }
+    case 'mail_watch_start':
+    case 'mail_watch_enable':
+      return {
+        rule: upsertEmailWatchRule({
+          ...args,
+          enabled: true,
+          mode: 'gmail_query',
+        }),
+        message: 'Email watch rule saved.',
+      };
+    case 'mail_watch_stop':
+    case 'mail_watch_disable':
+      return {
+        rule: upsertEmailWatchRule({
+          ...args,
+          enabled: false,
+          mode: 'gmail_query',
+        }),
+        message: 'Email watch rule disabled.',
+      };
+    case 'mail_watch_list':
+      return { rules: listEmailWatchRules() };
+    case 'list_email_watch_rules':
+      return { rules: listEmailWatchRules() };
+    case 'configure_email_watch':
+      return {
+        rule: upsertEmailWatchRule({
+          ...args,
+          mode: 'gmail_query',
+        }),
+      };
+    case 'cancel_email_watch':
+      return { cancelled: cancelEmailWatchRule(normalizeText(args.ruleId || args.id || '')) };
+    case 'check_email_watch_now':
+      return checkEmailWatchRuleNow(normalizeText(args.ruleId || args.id || ''));
+    case 'create_reminder':
+      return { reminder: createReminder(args) };
+    case 'list_reminders':
+      return { reminders: listReminders(Boolean(args.includePast)) };
+    case 'cancel_reminder':
+      return { removed: cancelReminder(args) };
+    case 'set_alarm':
+      return { message: `Alarm request recorded for ${normalizeText(args.time)}.` };
+    case 'plan_my_day':
+      return { text: `Day plan placeholder for ${normalizeText(args.date || 'today')}` };
+    case 'schedule_recurring_task':
+      return { task: scheduleRecurringTask(args) };
+    case 'list_recurring_tasks':
+      return { tasks: recurringTasks };
+    case 'cancel_recurring_task':
+      return { removed: cancelRecurringTask(normalizeText(args.taskId)) };
+    case 'google_search':
+      return { summary: await handleSearch(args.query || '') };
+    case 'visit_website':
+    case 'scrape_url':
+      return {
+        text: summarizeText(
+          cleanPageText(await visitWebsite(normalizeText(args.url || args.query || 'https://example.com')))
+        ),
+      };
+    case 'agentic_dynamic_scrape':
+      return {
+        text: summarizeText(
+          cleanPageText(await visitWebsite(normalizeText(args.url || args.query || 'https://example.com')))
+        ),
+      };
+    case 'run_js_script':
+      return { result: await safeEval(normalizeText(args.code || ''), buildBridgeContext()) };
+    case 'app_navigator':
+    case 'navigate_app':
+      return {
+        screen: normalizeText(args.screen || args.route || 'home'),
+        params: args.params || {},
+      };
+    case 'get_device_info':
+    case 'basic_device_info':
+      return {
+        model: await executeShell('getprop ro.product.model').catch(() => 'unknown'),
+        device: await executeShell('getprop ro.product.device').catch(() => 'unknown'),
+        manufacturer: await executeShell('getprop ro.product.manufacturer').catch(() => 'unknown'),
+      };
+    case 'basic_phone_info':
+    case 'phone_info':
+      return {
+        message: 'Phone info is now engine-side. Add a telephony connector if you need richer data.',
+      };
+    case 'phone_macro':
+    case 'run_phone_macro':
+      return {
+        message: 'Phone macro requests should be modeled as engine jobs with explicit inputs.',
+        job: createJob('phone-macro', args),
+      };
+    case 'native_settings':
+    case 'open_native_settings':
+      return {
+        message: 'Use explicit settings shortcuts in the Android UI instead of hidden native mutations.',
+      };
+    case 'notifications':
+    case 'list_notifications':
+      return {
+        message: 'Notification access should stay out of the public APK. Route notifications through the engine if you have an explicit connector.',
+      };
+    case 'mail_watch':
+    case 'gmail_watch':
+      return {
+        message: 'Mail watch is engine-managed. Add a provider connector to poll or subscribe to messages.',
+      };
+    case 'set_google_auth_state':
+      saveGoogleAuthState(args);
+      upsertConnector('gmail', {
+        id: 'google-auth',
+        label: `Google ${googleAuth.email || 'account'}`,
+        status: getGoogleAuthStatus().connected ? 'connected' : 'configured',
+        config: {
+          ...getGoogleAuthStatus(),
+        },
+      });
+      return { auth: getGoogleAuthStatus() };
+    case 'get_google_auth_state':
+      return { auth: getGoogleAuthStatus() };
+    case 'clear_google_auth_state':
+      clearGoogleAuthState();
+      return { cleared: true, auth: getGoogleAuthStatus() };
+    case 'google_docs_open':
+    case 'google_docs_create':
+    case 'create_google_doc': {
+      const doc = await createGoogleDoc(args);
+      const connector = upsertConnector('google-docs', {
+        id: doc.documentId,
+        label: normalizeText(args.title || doc.title || 'Google Doc'),
+        status: 'synced',
+        config: {
+          documentId: doc.documentId,
+          url: `https://docs.google.com/document/d/${doc.documentId}/edit`,
+        },
+      });
+      return { doc, connector };
+    }
+    case 'read_google_doc': {
+      const documentId = documentIdFrom(args.documentId || args.id || '');
+      const doc = await docsApi(`/${encodeURIComponent(documentId)}`);
+      return { documentId: doc.documentId, title: doc.title, text: extractGoogleDocText(doc), doc };
+    }
+    case 'append_google_doc_text': {
+      const documentId = documentIdFrom(args.documentId || args.id || '');
+      const doc = await docsApi(`/${encodeURIComponent(documentId)}`);
+      const prefix = extractGoogleDocText(doc) ? '\n' : '';
+      const result = await docsApi(`/${encodeURIComponent(documentId)}:batchUpdate`, {
+        method: 'POST',
+        body: JSON.stringify({
+          requests: [{
+            insertText: {
+              location: { index: appendGoogleDocIndex(doc) },
+              text: `${prefix}${normalizeText(args.text || '')}`,
+            },
+          }],
+        }),
+      });
+      return { result };
+    }
+    case 'replace_google_doc_text': {
+      const documentId = documentIdFrom(args.documentId || args.id || '');
+      const result = await docsApi(`/${encodeURIComponent(documentId)}:batchUpdate`, {
+        method: 'POST',
+        body: JSON.stringify({
+          requests: [{
+            replaceAllText: {
+              containsText: { text: normalizeText(args.findText || ''), matchCase: Boolean(args.matchCase) },
+              replaceText: normalizeText(args.replaceText || ''),
+            },
+          }],
+        }),
+      });
+      return { result };
+    }
+    case 'google_sheets_open':
+    case 'google_sheets_create':
+    case 'create_google_sheet': {
+      const spreadsheet = await createGoogleSheet(args);
+      const connector = upsertConnector('google-sheets', {
+        id: spreadsheet.spreadsheetId,
+        label: normalizeText(args.title || spreadsheet.properties?.title || 'Google Sheet'),
+        status: 'synced',
+        config: {
+          spreadsheetId: spreadsheet.spreadsheetId,
+          url: spreadsheet.spreadsheetUrl || `https://docs.google.com/spreadsheets/d/${spreadsheet.spreadsheetId}/edit`,
+        },
+      });
+      return { spreadsheet, connector };
+    }
+    case 'read_google_sheet_range': {
+      const spreadsheetId = spreadsheetIdFrom(args.spreadsheetId || args.id || '');
+      const range = normalizeText(args.range || '');
+      const data = await sheetsApi(`/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}?majorDimension=ROWS`);
+      return { range: data.range, values: data.values || [], data };
+    }
+    case 'append_google_sheet_row': {
+      const spreadsheetId = spreadsheetIdFrom(args.spreadsheetId || args.id || '');
+      const range = normalizeText(args.range || '');
+      const values = Array.isArray(args.values) ? args.values.map((cell) => cell == null ? '' : cell) : [];
+      const params = new URLSearchParams({
+        valueInputOption: normalizeText(args.valueInputOption || 'USER_ENTERED').toUpperCase() === 'RAW' ? 'RAW' : 'USER_ENTERED',
+        insertDataOption: 'INSERT_ROWS',
+      });
+      const update = await sheetsApi(`/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}:append?${params.toString()}`, {
+        method: 'POST',
+        body: JSON.stringify({ majorDimension: 'ROWS', values: [values] }),
+      });
+      return { update };
+    }
+    case 'append_google_sheet_rows': {
+      const spreadsheetId = spreadsheetIdFrom(args.spreadsheetId || args.id || '');
+      const range = normalizeText(args.range || '');
+      let rows = Array.isArray(args.rows) ? args.rows : [];
+      if (rows.length === 0 && typeof args.rowsJson === 'string') {
+        try {
+          rows = JSON.parse(args.rowsJson);
+        } catch (e) {
+          appendLog(`failed to parse rowsJson: ${e.message}`);
+        }
+      }
+      const params = new URLSearchParams({
+        valueInputOption: normalizeText(args.valueInputOption || 'USER_ENTERED').toUpperCase() === 'RAW' ? 'RAW' : 'USER_ENTERED',
+        insertDataOption: 'INSERT_ROWS',
+      });
+      const update = await sheetsApi(`/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}:append?${params.toString()}`, {
+        method: 'POST',
+        body: JSON.stringify({ majorDimension: 'ROWS', values: rows }),
+      });
+      return { update };
+    }
+    case 'update_google_sheet_range': {
+      const spreadsheetId = spreadsheetIdFrom(args.spreadsheetId || args.id || '');
+      const range = normalizeText(args.range || '');
+      let rows = Array.isArray(args.values) ? args.values : [];
+      if (rows.length === 0 && typeof args.valuesJson === 'string') {
+        try {
+          rows = JSON.parse(args.valuesJson);
+        } catch (e) {
+          appendLog(`failed to parse valuesJson: ${e.message}`);
+        }
+      }
+      const params = new URLSearchParams({
+        valueInputOption: normalizeText(args.valueInputOption || 'USER_ENTERED').toUpperCase() === 'RAW' ? 'RAW' : 'USER_ENTERED',
+      });
+      const update = await sheetsApi(`/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}?${params.toString()}`, {
+        method: 'PUT',
+        body: JSON.stringify({ majorDimension: 'ROWS', values: rows }),
+      });
+      return { update };
+    }
+    case 'google_forms_open':
+    case 'google_forms_create':
+    case 'create_google_form': {
+      const form = await createGoogleForm(args);
+      const connector = upsertConnector('google-forms', {
+        id: form.formId,
+        label: normalizeText(args.title || form.info?.title || 'Google Form'),
+        status: 'synced',
+        config: {
+          formId: form.formId,
+          url: `https://docs.google.com/forms/d/${form.formId}/edit`,
+        },
+      });
+      return { form, connector };
+    }
+    case 'get_google_form': {
+      const formId = formIdFrom(args.formId || args.id || '');
+      const form = await formsApi(`/${encodeURIComponent(formId)}`);
+      return { form };
+    }
+    case 'list_google_form_responses': {
+      const formId = formIdFrom(args.formId || args.id || '');
+      const params = new URLSearchParams();
+      const pageSize = Number(args.pageSize || 20);
+      if (Number.isFinite(pageSize) && pageSize > 0) params.set('pageSize', String(Math.min(1000, Math.floor(pageSize))));
+      if (normalizeText(args.filter || '')) params.set('filter', normalizeText(args.filter || ''));
+      const data = await formsApi(`/${encodeURIComponent(formId)}/responses${params.toString() ? `?${params.toString()}` : ''}`);
+      return { responses: data.responses || [] };
+    }
+    case 'batch_update_google_form': {
+      const formId = formIdFrom(args.formId || args.id || '');
+      const requests = Array.isArray(args.requests) ? args.requests : [];
+      const result = await formsApi(`/${encodeURIComponent(formId)}:batchUpdate`, {
+        method: 'POST',
+        body: JSON.stringify({
+          includeFormInResponse: Boolean(args.includeFormInResponse),
+          requests,
+        }),
+      });
+      return { result };
+    }
+    case 'add_google_form_questions': {
+      const formId = formIdFrom(args.formId || args.id || '');
+      const questions = normalizeFormQuestions(args.questions);
+      const form = await formsApi(`/${encodeURIComponent(formId)}`);
+      const requests = questions.map((question, index) => buildFormQuestionRequest(question, Array.isArray(form.items) ? form.items.length + index : index));
+      const result = await formsApi(`/${encodeURIComponent(formId)}:batchUpdate`, {
+        method: 'POST',
+        body: JSON.stringify({
+          includeFormInResponse: true,
+          requests,
+        }),
+      });
+      return { result };
+    }
+    case 'sync_connectors':
+      return {
+        auth: getGoogleAuthStatus(),
+        gmail: syncProviderConnectors('gmail', {
+          ...args,
+          status: getGoogleAuthStatus().connected ? 'connected' : 'missing',
+        }),
+        docs: syncProviderConnectors('google-docs', args),
+        sheets: syncProviderConnectors('google-sheets', args),
+        forms: syncProviderConnectors('google-forms', args),
+        mailWatch: syncProviderConnectors('mail-watch', args),
+      };
+    case 'list_chat_threads':
+      return { threads: listChatThreads() };
+    case 'get_chat_thread':
+      return { thread: getChatThread(args.threadId) };
+    case 'clear_chat_thread':
+      return { cleared: clearChatThread(args.threadId) };
+    case 'chat': {
+      const threadId = normalizeThreadId(args.threadId);
+      const messageText = normalizeText(args.message);
+      const thread = upsertChatThread(threadId, args.title || 'Chat');
+      const userMessage = messageText ? appendChatMessage(threadId, 'user', messageText) : null;
+      let replyText = '';
+      let assistantMessage = null;
+      let loopCount = 0;
+      const maxLoops = 5;
+
+      while (loopCount < maxLoops) {
+        loopCount++;
+        try {
+          const result = await generateGeminiReply(thread);
+
+          if (result.functionCalls && result.functionCalls.length > 0) {
+            // Format functionCall model response
+            const parts = result.functionCalls.map((call) => ({
+              functionCall: {
+                name: call.name,
+                args: call.args || {},
+              },
+            }));
+            appendChatMessage(threadId, 'assistant', '', parts);
+
+            // Execute each call and append functionResponse
+            for (const call of result.functionCalls) {
+              appendLog(`engine executing tool: ${call.name} with args ${JSON.stringify(call.args)}`);
+              let executionResult;
+              try {
+                executionResult = await handleCommand(call.name, call.args, req, payload);
+              } catch (e) {
+                appendLog(`tool ${call.name} failed: ${e.message}`);
+                executionResult = { ok: false, error: e.message };
+              }
+
+              // Append functionResponse message
+              appendChatMessage(threadId, 'function', '', [{
+                functionResponse: {
+                  name: call.name,
+                  response: executionResult,
+                },
+              }]);
+            }
+
+            // Continue the loop to call Gemini again with the tool output
+            continue;
+          }
+
+          replyText = result.text || 'Gemini returned an empty reply.';
+          assistantMessage = appendChatMessage(threadId, 'assistant', replyText);
+          break;
+        } catch (error) {
+          appendLog(`gemini chat loop error: ${error.message}`);
+          replyText = `Gemini chat failed: ${error.message}`;
+          assistantMessage = appendChatMessage(threadId, 'assistant', replyText);
+          break;
+        }
+      }
+
+      return {
+        thread: getChatThread(threadId),
+        userMessage,
+        assistantMessage,
+        reply: replyText,
+      };
+    }
+    case 'get_battery_status':
+      return { output: summarizeText(await getBatteryStatus()) };
+    case 'run_shizuku_health_check':
+      return { output: await healthCheck() };
+    case 'open_whatsapp_chat':
+    case 'send_whatsapp_message':
+    case 'search_whatsapp_chat':
+      return handleWhatsApp(args);
+    case 'open_youtube':
+    case 'search_youtube':
+      return handleYouTube(args);
+    case 'open_link':
+    case 'open_url':
+      return {
+        action: 'open-url',
+        url: normalizeText(args.url || args.link || ''),
+      };
+    default:
+      return { message: `Unsupported command: ${command}` };
+  }
+}
+
+ensureRecurringTimers();
+appendLog(`engine started v${VERSION}`);
+
+const server = http.createServer(async (req, res) => {
+  try {
+    appendLog(`request: ${req.method} ${req.url}`); // Log ALL requests
+
+    if (req.method === 'GET' && req.url === '/health') {
+      return json(res, 200, snapshot());
+    }
+
+    if (req.method === 'GET' && req.url === '/status') {
+      return json(res, 200, snapshot());
+    }
+
+    if (req.method === 'POST' && req.url === '/rpc') {
+      const payload = await readBody(req);
+      const command = payload.command;
+      const args = payload.args || {};
+
+      appendLog(`received RPC: ${command}`); // Log incoming requests
+
+    if (command !== 'health' && command !== 'status' && command !== 'version' && command !== 'pair') {
+        if (!requireAuth(req, res, payload)) return;
+
+        // License gate — engine refuses all commands until a valid license token is received
+        if (!licenseState.licensed || Date.now() > licenseState.expiresAt) {
+          return json(res, 403, {
+            v: 1,
+            id: payload.id || null,
+            ok: false,
+            error: {
+              code: 'LICENSE_EXPIRED',
+              message: 'Engine license has expired or was never set. Open the app to renew.',
+            },
+          });
+        }
+      }
+
+      const result = await handleCommand(command, args, req, payload);
+      return json(res, 200, {
+        v: 1,
+        id: payload.id || null,
+        ok: true,
+        result,
+      });
+    }
+
+    return json(res, 404, {
+      ok: false,
+      error: {
+        code: 'NOT_FOUND',
+        message: 'Endpoint not found',
+      },
+    });
+  } catch (error) {
+    appendLog(`error: ${error.message}`);
+    return json(res, 500, {
+      ok: false,
+      error: {
+        code: 'INTERNAL_ERROR',
+        message: error && error.message ? error.message : 'Unknown engine error',
+      },
+    });
+  }
+});
+
+server.listen(PORT, HOST, () => {
+  appendLog(`listening on http://${HOST}:${PORT}`);
+  console.log(`Idan engine listening on http://${HOST}:${PORT}`);
+});

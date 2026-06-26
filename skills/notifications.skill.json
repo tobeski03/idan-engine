@@ -1,0 +1,111 @@
+{
+  "id": "notifications",
+  "name": "Notification Skill",
+  "version": "1.0.0",
+  "description": "Listen to notifications and manage automatic replies based on user instructions.",
+  "enabled": true,
+  "toolDeclarations": [
+    {
+      "name": "configure_notification_auto_reply",
+      "description": "Turn on notification auto-reply using the user's natural-language instructions. Use this when the user says things like 'auto reply when...', 'if John messages...', or 'reply to WhatsApp notifications with...'.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "instructions": {
+            "type": "STRING",
+            "description": "Exact user instruction describing which recent notifications to reply to and what response style/content to send."
+          }
+        },
+        "required": ["instructions"]
+      }
+    },
+    {
+      "name": "show_notification_auto_reply",
+      "description": "Show whether notification auto-reply is enabled and what instruction is active.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {}
+      }
+    },
+    {
+      "name": "clear_notification_auto_reply",
+      "description": "Turn off notification auto-reply.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {}
+      }
+    },
+    {
+      "name": "list_notifications",
+      "description": "List active notifications that Idan can currently see.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "packageName": {
+            "type": "STRING",
+            "description": "Optional Android package filter, such as com.whatsapp."
+          },
+          "limit": {
+            "type": "NUMBER",
+            "description": "Maximum notifications to return."
+          }
+        }
+      }
+    },
+    {
+      "name": "open_notification",
+      "description": "Open an active notification by id, app package, or text query.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "notificationId": {
+            "type": "STRING",
+            "description": "Exact notification id if known."
+          },
+          "packageName": {
+            "type": "STRING",
+            "description": "Optional package filter."
+          },
+          "query": {
+            "type": "STRING",
+            "description": "Text to match in notification title, body, or package."
+          }
+        }
+      }
+    },
+    {
+      "name": "reply_to_latest_notification",
+      "description": "Reply to the newest matching active notification that has an inline reply action.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "notificationId": {
+            "type": "STRING",
+            "description": "Exact notification id if known."
+          },
+          "packageName": {
+            "type": "STRING",
+            "description": "Optional package filter, such as com.whatsapp."
+          },
+          "query": {
+            "type": "STRING",
+            "description": "Text to match in notification title/body."
+          },
+          "message": {
+            "type": "STRING",
+            "description": "Reply text to send."
+          }
+        },
+        "required": ["message"]
+      }
+    },
+    {
+      "name": "open_notification_settings",
+      "description": "Open Android notification listener settings so the user can grant notification access.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {}
+      }
+    }
+  ]
+}

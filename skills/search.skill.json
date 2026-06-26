@@ -1,0 +1,77 @@
+{
+  "id": "search",
+  "name": "Web Search",
+  "version": "1.0.0",
+  "description": "Search the web and visit specific user-provided URLs to extract readable text.",
+  "enabled": true,
+  "toolDeclarations": [
+    {
+      "name": "google_search",
+      "description": "Search for information on the web. Returns a summary of findings.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "query": {
+            "type": "STRING",
+            "description": "The search query, e.g. 'current fuel price in Lagos'"
+          }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "visit_website",
+      "description": "Visit any specific user-provided website URL to extract readable text content. Use this directly when the user provides a custom link, profile URL, article URL, LinkedIn URL, portfolio, CV page, or asks to scrape/read a link.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "url": {
+            "type": "STRING",
+            "description": "The full URL of the website to visit."
+          }
+        },
+        "required": ["url"]
+      }
+    },
+    {
+      "name": "scrape_url",
+      "description": "Alias for visit_website. Scrape/read a specific custom URL provided by the user and extract readable text content.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "url": {
+            "type": "STRING",
+            "description": "The full custom URL to scrape or read."
+          }
+        },
+        "required": ["url"]
+      }
+    },
+    {
+      "name": "agentic_dynamic_scrape",
+      "description": "Use the dynamic mobile Chrome scraper for JavaScript-heavy websites or tasks that require browser navigation such as clicking, typing, scrolling, waiting, then extracting exact information. Prefer this when normal visit_website/scrape_url fails, returns an empty shell, says JavaScript is required, or the user explicitly asks for an agentic/dynamic scrape.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "url": {
+            "type": "STRING",
+            "description": "The full URL to open in the dynamic scraper."
+          },
+          "goal": {
+            "type": "STRING",
+            "description": "The exact scraping/navigation goal, e.g. 'Search for iPhone 13 and return the cheapest visible price with product URL'."
+          },
+          "outputSchema": {
+            "type": "OBJECT",
+            "description": "Optional JSON-like schema describing the desired extracted fields."
+          },
+          "maxSteps": {
+            "type": "NUMBER",
+            "description": "Maximum browser actions. Default 12, maximum 25."
+          }
+        },
+        "required": ["url", "goal"]
+      }
+    }
+  ]
+}

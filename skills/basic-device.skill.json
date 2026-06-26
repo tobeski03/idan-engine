@@ -1,0 +1,130 @@
+{
+  "id": "basic_device",
+  "name": "Basic Device",
+  "version": "1.0.0",
+  "description": "Handle everyday Android device and app tasks such as settings shortcuts, installed app search, and device status checks.",
+  "enabled": true,
+  "toolDeclarations": [
+    {
+      "name": "get_device_status",
+      "description": "Get a compact phone status summary including battery, storage, and network information.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {}
+      }
+    },
+    {
+      "name": "get_storage_status",
+      "description": "Check phone storage usage.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {}
+      }
+    },
+    {
+      "name": "get_network_status",
+      "description": "Check Wi-Fi/mobile network related status available through Android shell.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {}
+      }
+    },
+    {
+      "name": "search_installed_apps",
+      "description": "Search installed Android packages by package name. Use when the user asks if an app is installed.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "query": {
+            "type": "STRING",
+            "description": "App name or package fragment to search for"
+          },
+          "limit": {
+            "type": "NUMBER",
+            "description": "Maximum results to return"
+          }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "open_app_by_package",
+      "description": "Open an installed app by Android package name.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "packageName": {
+            "type": "STRING",
+            "description": "Android package name such as com.whatsapp"
+          }
+        },
+        "required": ["packageName"]
+      }
+    },
+    {
+      "name": "open_app_by_name",
+      "description": "Search installed apps by visible app name and open the best match.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "query": {
+            "type": "STRING",
+            "description": "Visible app name such as Calculator, Instagram, WhatsApp, or Settings"
+          }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "open_app_info",
+      "description": "Open Android app-info/settings page for a package.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "packageName": {
+            "type": "STRING",
+            "description": "Android package name"
+          }
+        },
+        "required": ["packageName"]
+      }
+    },
+    {
+      "name": "open_android_settings",
+      "description": "Open a common Android settings page.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "page": {
+            "type": "STRING",
+            "enum": ["main", "wifi", "bluetooth", "battery", "storage", "apps", "accessibility", "notification", "location", "display", "sound", "security"],
+            "description": "Settings page to open"
+          }
+        },
+        "required": ["page"]
+      }
+    },
+    {
+      "name": "share_text",
+      "description": "Open Android share sheet with text. This lets the user choose where to share; it does not send automatically.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "text": {
+            "type": "STRING",
+            "description": "Text to share"
+          }
+        },
+        "required": ["text"]
+      }
+    },
+    {
+      "name": "wake_screen",
+      "description": "Wake the phone screen using Android key events. This requires Shizuku/shell access and does not unlock the device.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {}
+      }
+    }
+  ]
+}

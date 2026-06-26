@@ -1,0 +1,170 @@
+{
+  "id": "google-forms",
+  "name": "Google Forms",
+  "version": "1.0.0",
+  "description": "Create Google Forms, update form metadata and items with batch updates, and read form responses through the connected Google account.",
+  "enabled": true,
+  "toolDeclarations": [
+    {
+      "name": "create_google_form",
+      "description": "Create a new Google Form. Use this to start a form or quiz before adding items with batch updates.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "title": {
+            "type": "STRING",
+            "description": "Form title."
+          },
+          "documentTitle": {
+            "type": "STRING",
+            "description": "Optional Drive document title."
+          },
+          "unpublished": {
+            "type": "BOOLEAN",
+            "description": "Whether the form should start unpublished."
+          }
+        },
+        "required": ["title"]
+      }
+    },
+    {
+      "name": "get_google_form",
+      "description": "Read Google Form metadata and basic structure by form id or URL.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "formId": {
+            "type": "STRING",
+            "description": "Google Form ID or URL."
+          }
+        },
+        "required": ["formId"]
+      }
+    },
+    {
+      "name": "batch_update_google_form",
+      "description": "Apply one or more Google Forms batchUpdate requests. Use this to update form info, settings, items, or answer keys.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "formId": {
+            "type": "STRING",
+            "description": "Google Form ID or URL."
+          },
+          "requests": {
+            "type": "ARRAY",
+            "description": "Google Forms batchUpdate request objects.",
+            "items": {
+              "type": "OBJECT",
+              "description": "A single Google Forms batchUpdate request object."
+            }
+          },
+          "includeFormInResponse": {
+            "type": "BOOLEAN",
+            "description": "Whether to include the updated form in the response."
+          }
+        },
+        "required": ["formId", "requests"]
+      }
+    },
+    {
+      "name": "add_google_form_questions",
+      "description": "Add one or more generated questions to a Google Form. Use this instead of raw batchUpdate JSON when the user asks for generated questions.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "formId": {
+            "type": "STRING",
+            "description": "Google Form ID or URL."
+          },
+          "questions": {
+            "type": "ARRAY",
+            "description": "Question specs to add to the form in order.",
+            "items": {
+              "type": "OBJECT",
+              "properties": {
+                "title": {
+                  "type": "STRING",
+                  "description": "Question text shown to respondents."
+                },
+                "type": {
+                  "type": "STRING",
+                  "enum": ["short_answer", "paragraph", "multiple_choice", "checkbox", "dropdown", "scale", "date", "time"],
+                  "description": "Question type."
+                },
+                "required": {
+                  "type": "BOOLEAN",
+                  "description": "Whether the question is required."
+                },
+                "helpText": {
+                  "type": "STRING",
+                  "description": "Optional helper text."
+                },
+                "options": {
+                  "type": "ARRAY",
+                  "description": "Answer choices for choice questions.",
+                  "items": {
+                    "type": "STRING",
+                    "description": "A single choice label."
+                  }
+                },
+                "shuffle": {
+                  "type": "BOOLEAN",
+                  "description": "Whether to shuffle choice options."
+                },
+                "scaleLow": {
+                  "type": "NUMBER",
+                  "description": "Lowest value for a scale question."
+                },
+                "scaleHigh": {
+                  "type": "NUMBER",
+                  "description": "Highest value for a scale question."
+                },
+                "lowLabel": {
+                  "type": "STRING",
+                  "description": "Label for the low end of the scale."
+                },
+                "highLabel": {
+                  "type": "STRING",
+                  "description": "Label for the high end of the scale."
+                },
+                "includeTime": {
+                  "type": "BOOLEAN",
+                  "description": "Whether date questions should include time."
+                },
+                "includeYear": {
+                  "type": "BOOLEAN",
+                  "description": "Whether date questions should include year."
+                }
+              },
+              "required": ["title", "type"]
+            }
+          }
+        },
+        "required": ["formId", "questions"]
+      }
+    },
+    {
+      "name": "list_google_form_responses",
+      "description": "List responses submitted to a Google Form.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "formId": {
+            "type": "STRING",
+            "description": "Google Form ID or URL."
+          },
+          "filter": {
+            "type": "STRING",
+            "description": "Optional response filter, such as timestamp > 1710000000000."
+          },
+          "pageSize": {
+            "type": "NUMBER",
+            "description": "Maximum responses to return."
+          }
+        },
+        "required": ["formId"]
+      }
+    }
+  ]
+}

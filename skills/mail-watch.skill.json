@@ -1,0 +1,89 @@
+{
+  "id": "mail_watch",
+  "name": "Gmail Watch and Mail Alerts",
+  "version": "1.0.0",
+  "description": "Schedule daily Gmail checks and alert the user when matching email arrives.",
+  "enabled": true,
+  "toolDeclarations": [
+    {
+      "name": "configure_email_watch",
+      "description": "Create or update a daily Gmail watch rule. Use this when the user wants Idan to check email every day and alert them when messages match a sender name, keyword, or Gmail query.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "ruleId": {
+            "type": "STRING",
+            "description": "Optional existing rule id to update."
+          },
+          "title": {
+            "type": "STRING",
+            "description": "Short label for the watch rule."
+          },
+          "query": {
+            "type": "STRING",
+            "description": "Optional Gmail search query, for example is:unread newer_than:1d from:mum@gmail.com."
+          },
+          "matchTerms": {
+            "type": "ARRAY",
+            "description": "Sender names or keywords to match against From, Subject, or Snippet.",
+            "items": {
+              "type": "STRING",
+              "description": "A sender name or keyword."
+            }
+          },
+          "time": {
+            "type": "STRING",
+            "description": "Daily check time in HH:mm format, such as 08:00."
+          },
+          "enabled": {
+            "type": "BOOLEAN",
+            "description": "Whether the watch should be turned on immediately."
+          }
+        },
+        "required": ["title"]
+      }
+    },
+    {
+      "name": "list_email_watch_rules",
+      "description": "List all saved Gmail watch rules.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {}
+      }
+    },
+    {
+      "name": "cancel_email_watch",
+      "description": "Delete or disable a saved Gmail watch rule by rule id or title.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "ruleId": {
+            "type": "STRING",
+            "description": "Exact watch rule id."
+          },
+          "title": {
+            "type": "STRING",
+            "description": "Title or title fragment of the watch rule."
+          }
+        }
+      }
+    },
+    {
+      "name": "check_email_watch_now",
+      "description": "Run a Gmail watch rule immediately and notify the user if matching mail is found.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "ruleId": {
+            "type": "STRING",
+            "description": "Exact watch rule id."
+          },
+          "title": {
+            "type": "STRING",
+            "description": "Title or title fragment of the watch rule."
+          }
+        }
+      }
+    }
+  ]
+}

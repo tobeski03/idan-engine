@@ -1,0 +1,130 @@
+{
+  "id": "google-sheets",
+  "name": "Google Sheets",
+  "version": "1.0.0",
+  "description": "Create, read, update, and append rows in Google Sheets using the connected Google account.",
+  "enabled": true,
+  "toolDeclarations": [
+    {
+      "name": "create_google_sheet",
+      "description": "Create a new Google spreadsheet.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "title": {
+            "type": "STRING",
+            "description": "Spreadsheet title."
+          },
+          "sheetTitle": {
+            "type": "STRING",
+            "description": "Optional first sheet/tab title."
+          }
+        },
+        "required": ["title"]
+      }
+    },
+    {
+      "name": "read_google_sheet_range",
+      "description": "Read values from a Google Sheets range.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "spreadsheetId": {
+            "type": "STRING",
+            "description": "Spreadsheet ID or Google Sheets URL."
+          },
+          "range": {
+            "type": "STRING",
+            "description": "A1 range, e.g. Sheet1!A1:D20."
+          }
+        },
+        "required": ["spreadsheetId", "range"]
+      }
+    },
+    {
+      "name": "append_google_sheet_row",
+      "description": "Append one row to a Google Sheet table.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "spreadsheetId": {
+            "type": "STRING",
+            "description": "Spreadsheet ID or Google Sheets URL."
+          },
+          "range": {
+            "type": "STRING",
+            "description": "A1 range/table start, e.g. Sheet1!A:D."
+          },
+          "values": {
+            "type": "ARRAY",
+            "description": "Cell values for the row.",
+            "items": {
+              "type": "STRING",
+              "description": "A cell value."
+            }
+          },
+          "valueInputOption": {
+            "type": "STRING",
+            "enum": ["USER_ENTERED", "RAW"],
+            "description": "How Sheets should interpret values."
+          }
+        },
+        "required": ["spreadsheetId", "range", "values"]
+      }
+    },
+    {
+      "name": "append_google_sheet_rows",
+      "description": "Append multiple rows to a Google Sheet table. Pass rowsJson as a JSON array of arrays.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "spreadsheetId": {
+            "type": "STRING",
+            "description": "Spreadsheet ID or Google Sheets URL."
+          },
+          "range": {
+            "type": "STRING",
+            "description": "A1 range/table start, e.g. Sheet1!A:D."
+          },
+          "rowsJson": {
+            "type": "STRING",
+            "description": "JSON array of rows, e.g. [[\"Date\",\"Amount\"],[\"2026-05-14\",\"20\"]]."
+          },
+          "valueInputOption": {
+            "type": "STRING",
+            "enum": ["USER_ENTERED", "RAW"],
+            "description": "How Sheets should interpret values."
+          }
+        },
+        "required": ["spreadsheetId", "range", "rowsJson"]
+      }
+    },
+    {
+      "name": "update_google_sheet_range",
+      "description": "Overwrite values in a Google Sheets range. Pass valuesJson as a JSON array of arrays.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "spreadsheetId": {
+            "type": "STRING",
+            "description": "Spreadsheet ID or Google Sheets URL."
+          },
+          "range": {
+            "type": "STRING",
+            "description": "A1 range, e.g. Sheet1!A1:D3."
+          },
+          "valuesJson": {
+            "type": "STRING",
+            "description": "JSON array of rows, e.g. [[\"Name\",\"Score\"],[\"Ada\",\"10\"]]."
+          },
+          "valueInputOption": {
+            "type": "STRING",
+            "enum": ["USER_ENTERED", "RAW"],
+            "description": "How Sheets should interpret values."
+          }
+        },
+        "required": ["spreadsheetId", "range", "valuesJson"]
+      }
+    }
+  ]
+}

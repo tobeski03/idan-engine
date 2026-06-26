@@ -1,0 +1,296 @@
+{
+  "id": "app_navigator",
+  "name": "Self-Improving App Navigator",
+  "version": "1.0.0",
+  "description": "Observes Android app screens, stores semantic screen maps, learns reusable app procedures, and replays learned procedures when autonomy is enabled.",
+  "enabled": true,
+  "toolDeclarations": [
+    {
+      "name": "open_demo_recorder_settings",
+      "description": "Open Android Accessibility settings so the user can enable Idan's demo recorder for background workflow learning.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {}
+      }
+    },
+    {
+      "name": "open_demo_overlay_settings",
+      "description": "Open Android draw-over-apps settings so the user can allow Idan to show floating demo recorder controls over other apps.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {}
+      }
+    },
+    {
+      "name": "show_demo_overlay",
+      "description": "Show floating PLAY/STOP demo recorder controls over other apps. Requires draw-over-apps permission.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {}
+      }
+    },
+    {
+      "name": "hide_demo_overlay",
+      "description": "Hide the floating demo recorder controls.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {}
+      }
+    },
+    {
+      "name": "start_app_demonstration",
+      "description": "Start learning from a user demonstration. Captures the current screen as the beginning of a workflow, then waits for the user to perform the workflow manually.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "name": {
+            "type": "STRING",
+            "description": "Short name for the workflow being demonstrated."
+          },
+          "goal": {
+            "type": "STRING",
+            "description": "What the demonstrated workflow should accomplish."
+          },
+          "packageName": {
+            "type": "STRING",
+            "description": "Optional Android package name. Defaults to the currently observed app."
+          },
+          "limit": {
+            "type": "NUMBER",
+            "description": "Maximum visible UI elements to include. Defaults to 60."
+          }
+        }
+      }
+    },
+    {
+      "name": "finish_app_demonstration",
+      "description": "Finish a user demonstration. Captures the final screen and stores the before/after. If the user described the steps, convert them into a runnable learned procedure.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "name": {
+            "type": "STRING",
+            "description": "Short procedure name."
+          },
+          "goal": {
+            "type": "STRING",
+            "description": "What the demonstrated workflow accomplishes."
+          },
+          "packageName": {
+            "type": "STRING",
+            "description": "Optional Android package name."
+          },
+          "when": {
+            "type": "STRING",
+            "description": "Optional condition for when to use this learned procedure."
+          },
+          "steps": {
+            "type": "ARRAY",
+            "description": "Optional steps the user performed, if known. Supported actions: open_app, tap_text, tap_xy, type_text, press_key, wait.",
+            "items": {
+              "type": "OBJECT",
+              "description": "One demonstrated step."
+            }
+          },
+          "successSignals": {
+            "type": "ARRAY",
+            "description": "Optional labels seen after success.",
+            "items": {
+              "type": "STRING",
+              "description": "A success label."
+            }
+          },
+          "limit": {
+            "type": "NUMBER",
+            "description": "Maximum visible UI elements to include. Defaults to 60."
+          }
+        }
+      }
+    },
+    {
+      "name": "observe_current_screen",
+      "description": "Read the current Android accessibility UI hierarchy and save a compact semantic screen model with labels, controls, roles, and bounds.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "limit": {
+            "type": "NUMBER",
+            "description": "Maximum visible UI elements to include. Defaults to 60."
+          }
+        }
+      }
+    },
+    {
+      "name": "capture_visible_text",
+      "description": "Capture readable visible text from the current Android screen using accessibility/UI dump. Use this for app pages that cannot be scraped, such as LinkedIn profiles opened in the app or browser. Can optionally scroll and collect multiple screens.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "scrolls": {
+            "type": "NUMBER",
+            "description": "Number of downward scrolls to perform after the first capture. Defaults to 0; use 2-5 for profile pages."
+          },
+          "packageName": {
+            "type": "STRING",
+            "description": "Optional Android package to open before capturing, e.g. com.linkedin.android or com.android.chrome."
+          },
+          "url": {
+            "type": "STRING",
+            "description": "Optional URL/deep link to open before capturing. Useful for profile pages that require the app or browser."
+          },
+          "waitMs": {
+            "type": "NUMBER",
+            "description": "Milliseconds to wait after opening the app or URL before the first UI dump. Defaults to 1800."
+          },
+          "returnToIdan": {
+            "type": "BOOLEAN",
+            "description": "Whether to reopen Idan after capture so the user can see the result. Defaults to true."
+          },
+          "rememberKey": {
+            "type": "STRING",
+            "description": "Optional memory key to save captured text under, e.g. linkedin:profile:self."
+          }
+        }
+      }
+    },
+    {
+      "name": "connect_linkedin_profile",
+      "description": "Connect/import a user's LinkedIn profile by opening their LinkedIn /in/ URL in the LinkedIn app, reading visible profile text with UI dump, scrolling, and saving it to memory.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "url": {
+            "type": "STRING",
+            "description": "The user's LinkedIn profile URL, usually https://www.linkedin.com/in/profile-slug/."
+          },
+          "scrolls": {
+            "type": "NUMBER",
+            "description": "Number of downward scrolls to collect profile sections. Defaults to 2 for a fast first import."
+          },
+          "rememberKey": {
+            "type": "STRING",
+            "description": "Optional memory key. Defaults to linkedin:profile:self."
+          }
+        },
+        "required": ["url"]
+      }
+    },
+    {
+      "name": "learn_app_procedure",
+      "description": "Save a reusable procedure for an app after observing or successfully performing a workflow. Use this to let Idan improve over time.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "name": {
+            "type": "STRING",
+            "description": "Short procedure name, e.g. open profile search or dismiss premium popup."
+          },
+          "packageName": {
+            "type": "STRING",
+            "description": "Android package this procedure belongs to, e.g. com.linkedin.android."
+          },
+          "goal": {
+            "type": "STRING",
+            "description": "What this procedure accomplishes."
+          },
+          "screenKey": {
+            "type": "STRING",
+            "description": "Optional screen key from observe_current_screen."
+          },
+          "when": {
+            "type": "STRING",
+            "description": "Optional natural-language condition for when to use this procedure."
+          },
+          "steps": {
+            "type": "ARRAY",
+            "description": "Reusable steps. Supported actions: open_app, tap_text, tap_xy, type_text, press_key, wait.",
+            "items": {
+              "type": "OBJECT",
+              "description": "One procedure step."
+            }
+          },
+          "successSignals": {
+            "type": "ARRAY",
+            "description": "Optional text labels that suggest the procedure succeeded.",
+            "items": {
+              "type": "STRING",
+              "description": "A success label."
+            }
+          },
+          "failureSignals": {
+            "type": "ARRAY",
+            "description": "Optional text labels that suggest the procedure failed.",
+            "items": {
+              "type": "STRING",
+              "description": "A failure label."
+            }
+          },
+          "confidence": {
+            "type": "NUMBER",
+            "description": "Initial confidence from 0.1 to 0.98. Defaults to 0.7."
+          }
+        },
+        "required": ["name", "packageName", "goal", "steps"]
+      }
+    },
+    {
+      "name": "list_learned_app_procedures",
+      "description": "List procedures Idan has learned for apps.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "packageName": {
+            "type": "STRING",
+            "description": "Optional package name to filter by."
+          },
+          "query": {
+            "type": "STRING",
+            "description": "Optional memory search query."
+          },
+          "limit": {
+            "type": "NUMBER",
+            "description": "Maximum procedures to return."
+          }
+        }
+      }
+    },
+    {
+      "name": "delete_learned_app_procedure",
+      "description": "Delete a learned app procedure from Idan's memory when the user says it was wrong, mistaken, outdated, or should be forgotten.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "name": {
+            "type": "STRING",
+            "description": "Procedure name to delete."
+          },
+          "packageName": {
+            "type": "STRING",
+            "description": "Optional Android package name for exact deletion."
+          },
+          "query": {
+            "type": "STRING",
+            "description": "Search query for fuzzy deletion when packageName is unknown."
+          }
+        }
+      }
+    },
+    {
+      "name": "run_learned_app_procedure",
+      "description": "Run a previously learned app procedure. Requires autonomy to be enabled.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "name": {
+            "type": "STRING",
+            "description": "Procedure name."
+          },
+          "packageName": {
+            "type": "STRING",
+            "description": "Android package name for the procedure."
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "idan-engine",
+  "version": "0.2.0",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "health": "node server.js --health-only",
+    "install-termux": "bash install-termux.sh",
+    "update": "bash update.sh"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

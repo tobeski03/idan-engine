@@ -1,0 +1,135 @@
+{
+  "id": "planner",
+  "name": "Planner, Reminders, and Alarms",
+  "version": "1.0.0",
+  "description": "Create reminders, set Android alarms, list saved reminders, cancel saved reminders, and plan the user's day from memory and current priorities.",
+  "enabled": true,
+  "toolDeclarations": [
+    {
+      "name": "create_reminder",
+      "description": "Save a reminder and open Android Calendar with a matching reminder event. Use this when the user asks to be reminded about something.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "title": {
+            "type": "STRING",
+            "description": "Short reminder title."
+          },
+          "dueAt": {
+            "type": "STRING",
+            "description": "Local date/time for the reminder in ISO-like format, e.g. 2026-05-05T18:30:00."
+          },
+          "notes": {
+            "type": "STRING",
+            "description": "Optional reminder notes."
+          },
+          "recurrence": {
+            "type": "STRING",
+            "enum": ["once", "daily", "weekly"],
+            "description": "How often the reminder repeats."
+          },
+          "autonomous": {
+            "type": "BOOLEAN",
+            "description": "If true, the AI will automatically tap the Save button in the Calendar app. Only use this if the user has explicitly given permission or enabled global autonomy."
+          }
+        },
+        "required": ["title", "dueAt"]
+      }
+    },
+    {
+      "name": "set_alarm",
+      "description": "Create an Android alarm for a specific local time. Use this for wake-up alarms, timers expressed as an alarm time, or alarm requests.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "label": {
+            "type": "STRING",
+            "description": "Alarm label."
+          },
+          "time": {
+            "type": "STRING",
+            "description": "Local time in HH:mm 24-hour format, or a full ISO-like date/time."
+          },
+          "skipUi": {
+            "type": "BOOLEAN",
+            "description": "Whether Android should try to set the alarm without opening the clock UI."
+          }
+        },
+        "required": ["label", "time"]
+      }
+    },
+    {
+      "name": "list_reminders",
+      "description": "List saved reminders from Idan's local reminder store.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "includePast": {
+            "type": "BOOLEAN",
+            "description": "Whether to include past reminders."
+          }
+        }
+      }
+    },
+    {
+      "name": "cancel_reminder",
+      "description": "Cancel a saved Idan reminder by id or by matching title text. This removes Idan's saved copy; Android Calendar or Clock entries may still need manual removal.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "id": {
+            "type": "STRING",
+            "description": "Reminder id from list_reminders."
+          },
+          "title": {
+            "type": "STRING",
+            "description": "Reminder title or title fragment to cancel."
+          }
+        }
+      }
+    },
+    {
+      "name": "plan_my_day",
+      "description": "Create a practical day plan from the user's memory, current priorities, calendar-like commitments, energy preference, and available hours.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "date": {
+            "type": "STRING",
+            "description": "Date being planned in YYYY-MM-DD format."
+          },
+          "memorySummary": {
+            "type": "STRING",
+            "description": "Useful facts from agent memory about the user, habits, preferences, tasks, people, and recent events."
+          },
+          "priorities": {
+            "type": "ARRAY",
+            "description": "The main tasks or outcomes to include today.",
+            "items": {
+              "type": "STRING",
+              "description": "A priority or task."
+            }
+          },
+          "commitments": {
+            "type": "ARRAY",
+            "description": "Fixed appointments, classes, calls, errands, or deadlines.",
+            "items": {
+              "type": "STRING",
+              "description": "A fixed commitment."
+            }
+          },
+          "availableHours": {
+            "type": "STRING",
+            "description": "Available planning window, e.g. 09:00-22:00."
+          },
+          "energy": {
+            "type": "STRING",
+            "enum": ["low", "normal", "high"],
+            "description": "Expected energy level."
+          }
+        },
+        "required": ["date"]
+      }
+    }
+  ]
+}

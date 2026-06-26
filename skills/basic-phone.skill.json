@@ -1,0 +1,98 @@
+{
+  "id": "basic_phone",
+  "name": "Basic Phone",
+  "version": "1.0.0",
+  "description": "Look up contacts, check missed calls, and open the dialer using Android phone capabilities.",
+  "enabled": true,
+  "toolDeclarations": [
+    {
+      "name": "search_contacts",
+      "description": "Search the user's contacts by name or phone number. Use this when the user asks whether someone is in contacts or asks for a contact's number.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "query": {
+            "type": "STRING",
+            "description": "Name, alias, or phone number to search for"
+          },
+          "limit": {
+            "type": "NUMBER",
+            "description": "Maximum contacts to return"
+          }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "check_contact_exists",
+      "description": "Check whether a person or phone number exists in the user's contacts.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "query": {
+            "type": "STRING",
+            "description": "Name, alias, or phone number to check"
+          }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "get_recent_missed_calls",
+      "description": "Get recent missed calls from the Android call log.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "limit": {
+            "type": "NUMBER",
+            "description": "Maximum missed calls to return"
+          }
+        }
+      }
+    },
+    {
+      "name": "open_contact",
+      "description": "Open a saved Android contact by name or phone number.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "query": {
+            "type": "STRING",
+            "description": "Contact name or phone number to open"
+          }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "open_dialer",
+      "description": "Open the Android dialer, optionally prefilled with a phone number. This does not place the call automatically.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "phoneNumber": {
+            "type": "STRING",
+            "description": "Optional phone number to prefill"
+          }
+        }
+      }
+    },
+    {
+      "name": "open_sms_composer",
+      "description": "Open the SMS composer with an optional phone number and draft message. This does not send automatically.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "phoneNumber": {
+            "type": "STRING",
+            "description": "Optional phone number to prefill"
+          },
+          "message": {
+            "type": "STRING",
+            "description": "Optional draft SMS body"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+# ─── Secrets & credentials ───────────────────────────────────────────────────
+.env
+google-auth.json
+
+# ─── Runtime state (generated on-device, per-install) ────────────────────────
+engine-state.json
+chats.json
+memory.json
+plans.json
+reminders.json
+recurring-tasks.json
+email-watch.json
+connectors.json
+
+# ─── Logs ────────────────────────────────────────────────────────────────────
+*.log
+*.out.log
+*.err.log
+
+# ─── Node dependencies (installed fresh by installer) ────────────────────────
+node_modules/
+
+# ─── OS noise ────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db

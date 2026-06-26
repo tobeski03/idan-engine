@@ -1,0 +1,73 @@
+{
+  "id": "gmail",
+  "name": "Gmail",
+  "version": "1.0.0",
+  "description": "Read, search, draft, and send Gmail messages through the official Gmail REST API using the connected Google account.",
+  "enabled": true,
+  "toolDeclarations": [
+    {
+      "name": "list_gmail_messages",
+      "description": "Search or list Gmail messages. Use this when the user asks to check inbox, unread mail, latest email, or find emails matching a query.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "query": {
+            "type": "STRING",
+            "description": "Gmail search query, e.g. from:john newer_than:7d, is:unread, subject:invoice."
+          },
+          "limit": {
+            "type": "NUMBER",
+            "description": "Maximum messages to show, up to 20."
+          }
+        }
+      }
+    },
+    {
+      "name": "read_gmail_message",
+      "description": "Read a Gmail message by id or by searching for the newest matching message.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "messageId": {
+            "type": "STRING",
+            "description": "Gmail message id."
+          },
+          "query": {
+            "type": "STRING",
+            "description": "Optional Gmail search query to find the newest matching message when messageId is not known."
+          }
+        }
+      }
+    },
+    {
+      "name": "send_gmail_email",
+      "description": "Send an email from the connected Gmail account. Only use when the user explicitly asks to send an email and provides recipient, subject, and body.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "to": { "type": "STRING", "description": "Recipient email address, or comma-separated addresses." },
+          "subject": { "type": "STRING", "description": "Email subject." },
+          "body": { "type": "STRING", "description": "Plain text email body." },
+          "cc": { "type": "STRING", "description": "Optional CC recipients." },
+          "bcc": { "type": "STRING", "description": "Optional BCC recipients." }
+        },
+        "required": ["to", "subject", "body"]
+      }
+    },
+    {
+      "name": "create_gmail_draft",
+      "description": "Create a Gmail draft instead of sending. Use this when the user wants to review an email before sending.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "to": { "type": "STRING", "description": "Recipient email address, or comma-separated addresses." },
+          "subject": { "type": "STRING", "description": "Email subject." },
+          "body": { "type": "STRING", "description": "Plain text email body." },
+          "cc": { "type": "STRING", "description": "Optional CC recipients." },
+          "bcc": { "type": "STRING", "description": "Optional BCC recipients." }
+        },
+        "required": ["to", "subject", "body"]
+      }
+    }
+  ]
+}

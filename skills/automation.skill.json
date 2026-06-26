@@ -1,0 +1,71 @@
+{
+  "id": "automation",
+  "name": "Automation & Scripting",
+  "version": "1.0.0",
+  "description": "Powerful tools for advanced automation, including custom JS script execution and recurring task scheduling.",
+  "enabled": true,
+  "toolDeclarations": [
+    {
+      "name": "run_js_script",
+      "description": "Execute a JavaScript script with access to the system context (ctx). This allows for complex logic, loops, and multi-step automation. The script has access to ctx.executeShell, ctx.dumpUI, ctx.findElement, ctx.boundsToCenter, ctx.delay, ctx.showToast, and ctx.isAutonomyEnabled.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "code": {
+            "type": "STRING",
+            "description": "The JavaScript code to execute. Example: 'const xml = await ctx.dumpUI(); if (xml.includes(\"Login\")) { await ctx.showToast(\"Found login screen\"); }'"
+          }
+        },
+        "required": ["code"]
+      }
+    },
+    {
+      "name": "schedule_recurring_task",
+      "description": "Schedule a recurring automation task (like a cronjob).",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "description": {
+            "type": "STRING",
+            "description": "Short description of what the task does."
+          },
+          "intervalMs": {
+            "type": "NUMBER",
+            "description": "Interval between executions in milliseconds (minimum 60000 / 1 minute)."
+          },
+          "jsScript": {
+            "type": "STRING",
+            "description": "The JavaScript code to run when the task is due."
+          },
+          "shellCommand": {
+            "type": "STRING",
+            "description": "Optional Android shell command to run natively in the background. Prefer this for real background cron jobs because it does not need the React Native app to stay open."
+          }
+        },
+        "required": ["description", "intervalMs"]
+      }
+    },
+    {
+      "name": "list_recurring_tasks",
+      "description": "List native background recurring automation tasks.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {}
+      }
+    },
+    {
+      "name": "cancel_recurring_task",
+      "description": "Cancel a native background recurring automation task by id.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "taskId": {
+            "type": "STRING",
+            "description": "Task id from list_recurring_tasks."
+          }
+        },
+        "required": ["taskId"]
+      }
+    }
+  ]
+}

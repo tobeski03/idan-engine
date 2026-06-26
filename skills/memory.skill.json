@@ -1,0 +1,72 @@
+{
+  "id": "memory",
+  "name": "Personal Memory",
+  "version": "1.0.0",
+  "description": "Remember, search, show, and forget durable personal information about the user.",
+  "enabled": true,
+  "toolDeclarations": [
+    {
+      "name": "remember_user_fact",
+      "description": "Save durable personal memory when the user explicitly states something to remember, such as their name, preferences, CV details, important people, schedule facts, or favorite music.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "kind": {
+            "type": "STRING",
+            "enum": ["profile", "preference", "person", "habit", "schedule", "media", "communication", "fact"],
+            "description": "Memory category."
+          },
+          "key": {
+            "type": "STRING",
+            "description": "Stable short key for the memory, such as user:self, favorite:song, contact:john, or cv:work."
+          },
+          "value": {
+            "type": "STRING",
+            "description": "The fact or summary to remember."
+          },
+          "confidence": {
+            "type": "NUMBER",
+            "description": "Confidence from 0 to 1."
+          }
+        },
+        "required": ["kind", "key", "value"]
+      }
+    },
+    {
+      "name": "show_user_memory",
+      "description": "Show remembered personal information. Use when the user asks what you remember, asks about known preferences, contacts, music, schedule, or profile.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "query": {
+            "type": "STRING",
+            "description": "Optional search query."
+          },
+          "limit": {
+            "type": "NUMBER",
+            "description": "Maximum memories to show."
+          }
+        }
+      }
+    },
+    {
+      "name": "forget_user_memory",
+      "description": "Delete personal memory matching a query. Use when the user asks you to forget, remove, clear, or delete something you remember.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "query": {
+            "type": "STRING",
+            "description": "Text to match in memory key or value."
+          },
+          "kind": {
+            "type": "STRING",
+            "enum": ["profile", "preference", "person", "habit", "schedule", "media", "communication", "fact", "task", "rule", "procedure", "safety"],
+            "description": "Optional memory category filter."
+          }
+        },
+        "required": ["query"]
+      }
+    }
+  ]
+}

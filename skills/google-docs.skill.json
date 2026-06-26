@@ -1,0 +1,58 @@
+{
+  "id": "google-docs",
+  "name": "Google Docs",
+  "version": "1.0.0",
+  "description": "Create, read, append to, and replace text in Google Docs using the connected Google account.",
+  "enabled": true,
+  "toolDeclarations": [
+    {
+      "name": "create_google_doc",
+      "description": "Create a new Google Doc, optionally with initial body text.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "title": { "type": "STRING", "description": "Document title." },
+          "body": { "type": "STRING", "description": "Optional initial plain text content." }
+        },
+        "required": ["title"]
+      }
+    },
+    {
+      "name": "read_google_doc",
+      "description": "Read plain text from a Google Doc.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "documentId": { "type": "STRING", "description": "Google Doc ID or URL." }
+        },
+        "required": ["documentId"]
+      }
+    },
+    {
+      "name": "append_google_doc_text",
+      "description": "Append plain text to the end of a Google Doc.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "documentId": { "type": "STRING", "description": "Google Doc ID or URL." },
+          "text": { "type": "STRING", "description": "Plain text to append." }
+        },
+        "required": ["documentId", "text"]
+      }
+    },
+    {
+      "name": "replace_google_doc_text",
+      "description": "Replace all matching text in a Google Doc. Useful for placeholders like {{name}}.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "documentId": { "type": "STRING", "description": "Google Doc ID or URL." },
+          "findText": { "type": "STRING", "description": "Exact text to find, such as {{client_name}}." },
+          "replaceText": { "type": "STRING", "description": "Replacement text." },
+          "matchCase": { "type": "BOOLEAN", "description": "Whether matching should be case-sensitive." }
+        },
+        "required": ["documentId", "findText", "replaceText"]
+      }
+    }
+  ]
+}
