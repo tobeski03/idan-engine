@@ -1460,8 +1460,23 @@ function syncProviderConnectors(type, args = {}) {
   };
 }
 
+function parseBatteryOutput(output) {
+  const level = output.match(/level:\s*(\d+)/)?.[1] || 'unknown';
+  const ac = output.includes('AC powered: true');
+  const usb = output.includes('USB powered: true');
+  const wireless = output.includes('Wireless powered: true');
+  const charging = ac || usb || wireless;
+  return { level: Number(level) || 0, charging, summary: `Battery: ${level}%${charging ? ' (charging)' : ''}` };
+}
+
+function compactLines(output, limit = 18) {
+  return String(output || '').split('\n').map((l) => l.trim()).filter(Boolean).slice(0, limit).join('\n');
+}
+
 function getBatteryStatus() {
-  return executeShell('dumpsys battery').catch((error) => `Battery query failed: ${error.message}`);
+  return executeShell('dumpsys battery')
+    .then((raw) => { const b = parseBatteryOutput(raw); return `${b.summary}\n\n${compactLines(raw, 10)}`; })
+    .catch((error) => `Battery query failed: ${error.message}`);
 }
 
 function healthCheck() {
@@ -1532,36 +1547,65 @@ async function handleCommand(command, args, req, payload) {
       return handleCommand('search_youtube', args, req, payload);
 
     // Basic Device aliases
-    case 'get_device_status':
+    case 'get_device_status': {
+      const [batteryRaw, storageRaw, networkRaw] = await Promise.all([
+        executeShell('dumpsys battery').catch(() => ''),
+        executeShell('df -h /data /sdcard 2>/dev/null || df -h').catch(() => ''),
+        executeShell('cmd wifi status 2>/dev/null || dumpsys connectivity').catch(() => ''),
+      ]);
+      const battery = batteryRaw ? parseBatteryOutput(batteryRaw) : { summary: 'Battery unknown' };
       return {
         ok: true,
-        battery: await getBatteryStatus().catch(() => 'unknown'),
-        storage: '50GB / 128GB (mock)',
-        network: 'Connected (mock)'
+        battery: battery.summary,
+        batteryLevel: battery.level,
+        charging: battery.charging,
+        storage: compactLines(storageRaw, 6) || 'Storage unknown',
+        network: compactLines(networkRaw, 8) || 'Network unknown',
       };
-    case 'get_storage_status':
-      return { storage: '50GB / 128GB (mock)' };
-    case 'get_network_status':
-      return { network: 'Wi-Fi active, LTE standby (mock)' };
-    case 'search_installed_apps':
-      return {
-        apps: [
-          { name: 'WhatsApp', package: 'com.whatsapp' },
-          { name: 'YouTube', package: 'com.google.android.youtube' },
-          { name: 'Chrome', package: 'com.android.chrome' },
-          { name: 'Settings', package: 'com.android.settings' }
-        ].filter(app => app.name.toLowerCase().includes(String(args.query || '').toLowerCase()))
-      };
+    }
+    case 'get_storage_status': {
+      const raw = await executeShell('df -h /data /sdcard 2>/dev/null || df -h').catch(() => '');
+      return { storage: compactLines(raw, 10) || 'Storage unknown' };
+    }
+    case 'get_network_status': {
+      const raw = await executeShell('cmd wifi status 2>/dev/null || dumpsys connectivity').catch(() => '');
+      return { network: compactLines(raw, 16) || 'Network unknown' };
+    }
+    case 'search_installed_apps': {
+      const query = String(args.query || '').toLowerCase().trim();
+      const limit = Math.min(30, Math.max(1, Number(args.limit || 12)));
+      try {
+        // pm list packages -f returns lines like: package:/path/to/apk=com.example.app
+        const raw = await executeShell('pm list packages -f');
+        const apps = raw.split('\n')
+          .map((line) => {
+            const match = line.match(/^package:(.+)=([^=]+)$/);
+            if (!match) return null;
+            const packageName = match[2].trim();
+            return { name: packageName, package: packageName };
+          })
+          .filter((app) => app && (!query || app.package.toLowerCase().includes(query)))
+          .slice(0, limit);
+        return { apps };
+      } catch (e) {
+        appendLog(`search_installed_apps failed: ${e.message}`);
+        return { apps: [] };
+      }
+    }
     case 'open_app_by_package':
       return { action: 'open-app', packageName: args.packageName };
     case 'open_app_by_name':
       return { action: 'open-app', query: args.query };
     case 'open_app_info':
+      // Try shell first, fall back to app-side action
+      await executeShell(`am start -a android.settings.APPLICATION_DETAILS_SETTINGS -d 'package:${String(args.packageName || '').replace(/'/g, '')}' 2>/dev/null`)
+        .catch(() => {});
       return { action: 'open-app-info', packageName: args.packageName };
     case 'open_android_settings':
       return { action: 'open-settings', page: args.page };
     case 'wake_screen':
-      return { action: 'wake-screen' };
+      await executeShell('input keyevent KEYCODE_WAKEUP 2>/dev/null || input keyevent 224').catch(() => {});
+      return { action: 'wake-screen', ok: true };
     case 'share_text':
       return { action: 'share-text', text: args.text };
 
@@ -1590,10 +1634,46 @@ async function handleCommand(command, args, req, payload) {
       }
       return { contacts };
     }
-    case 'check_contact_exists':
-      return { exists: true };
-    case 'get_recent_missed_calls':
-      return { calls: [] };
+    case 'check_contact_exists': {
+      const query = String(args.query || '').toLowerCase().trim();
+      let exists = false;
+      let matchedNames = [];
+      try {
+        const raw = await executeShell('termux-contact-list');
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && query) {
+          const matches = parsed.filter((c) => String(c.name || '').toLowerCase().includes(query));
+          exists = matches.length > 0;
+          matchedNames = matches.slice(0, 5).map((c) => c.name);
+        }
+      } catch (e) {
+        appendLog(`check_contact_exists failed: ${e.message}`);
+      }
+      return { exists, matchedNames };
+    }
+    case 'get_recent_missed_calls': {
+      const limit = Math.min(25, Math.max(1, Number(args.limit || 10)));
+      let calls = [];
+      try {
+        // termux-telephony-calllog returns JSON array of call log entries
+        const raw = await executeShell('termux-telephony-calllog');
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          calls = parsed
+            .filter((c) => String(c.type || '').toUpperCase() === 'MISSED')
+            .slice(0, limit)
+            .map((c) => ({
+              name: c.name || c.number || 'Unknown',
+              phone: c.number || '',
+              time: c.date ? new Date(Number(c.date)).toLocaleString() : 'Unknown time',
+              isNew: true,
+            }));
+        }
+      } catch (e) {
+        appendLog(`get_recent_missed_calls failed: ${e.message}`);
+      }
+      return { calls };
+    }
     case 'open_contact':
       return { action: 'open-contact', query: args.query };
     case 'open_dialer':
@@ -1607,16 +1687,21 @@ async function handleCommand(command, args, req, payload) {
         const state = args.state || 'on';
         const isOn = state === 'on';
         const flashErrors = [];
-        // termux-torch is the correct Termux:API command (requires Termux:API app installed)
-        const flashResult = await executeShell(`termux-torch ${state}`)
-          .catch((e) => { flashErrors.push(`termux-torch: ${e.message}`); return null; });
-        // Fallback: MIUI torch broadcast
-        if (flashResult === null) {
-          await executeShell(`am broadcast -a miui.intent.action.TOGGLE_TORCH --ez state ${isOn}`)
-            .catch((e) => { flashErrors.push(`am broadcast: ${e.message}`); });
+        // 1. cmd torch (Android 10+ stock, most reliable)
+        const r1 = await executeShell(`cmd torch ${isOn ? 'on' : 'off'}`)
+          .catch((e) => { flashErrors.push(`cmd torch: ${e.message}`); return null; });
+        // 2. termux-torch (Termux:API)
+        if (r1 === null) {
+          const r2 = await executeShell(`termux-torch ${state}`)
+            .catch((e) => { flashErrors.push(`termux-torch: ${e.message}`); return null; });
+          // 3. MIUI broadcast fallback
+          if (r2 === null) {
+            await executeShell(`am broadcast -a miui.intent.action.TOGGLE_TORCH --ez state ${isOn}`)
+              .catch((e) => { flashErrors.push(`am broadcast: ${e.message}`); });
+          }
         }
         if (flashErrors.length > 0) appendLog(`toggle_flashlight errors: ${flashErrors.join('; ')}`);
-        return { action: 'toggle-flashlight', state, ok: flashErrors.length < 2 };
+        return { action: 'toggle-flashlight', state, ok: flashErrors.length < 3 };
       }
     case 'set_volume':
       {
@@ -1652,10 +1737,17 @@ async function handleCommand(command, args, req, payload) {
     case 'set_dnd':
       {
         const enabled = Boolean(args.enabled);
-        const dndErr = await executeShell(`cmd notification set_dnd_zen ${enabled ? 1 : 0}`)
-          .then(() => null).catch((e) => e.message);
-        if (dndErr) appendLog(`set_dnd error: ${dndErr}`);
-        return { action: 'set-dnd', enabled, ok: !dndErr };
+        const dndErrors = [];
+        // Primary: settings put (more reliable across Android versions)
+        await executeShell(`settings put global zen_mode ${enabled ? '1' : '0'}`)
+          .catch((e) => { dndErrors.push(`settings put: ${e.message}`); });
+        // Fallback: cmd notification
+        if (dndErrors.length > 0) {
+          await executeShell(`cmd notification set_dnd_zen ${enabled ? 1 : 0}`)
+            .catch((e) => { dndErrors.push(`cmd notification: ${e.message}`); });
+        }
+        if (dndErrors.length > 1) appendLog(`set_dnd errors: ${dndErrors.join('; ')}`);
+        return { action: 'set-dnd', enabled, ok: dndErrors.length < 2 };
       }
 
     // Notifications aliases
@@ -1734,6 +1826,76 @@ async function handleCommand(command, args, req, payload) {
     }
     case 'getLogs':
       return { lines: fs.existsSync(LOG_FILE) ? fs.readFileSync(LOG_FILE, 'utf8').split('\n').filter(Boolean).slice(-200) : [] };
+
+    // ── Custom skill management ───────────────────────────────────────────────
+    case 'upload_skill': {
+      const filename = String(args.filename || '').trim();
+      const code = String(args.code || '').trim();
+      if (!filename.endsWith('.skill.js') || filename.includes('/') || filename.includes('..')) {
+        return { ok: false, error: 'filename must end in .skill.js and contain no path separators' };
+      }
+      if (!code) {
+        return { ok: false, error: 'code is required' };
+      }
+      if (!code.includes('module.exports')) {
+        return { ok: false, error: 'code must use module.exports = { ... }' };
+      }
+      if (!fs.existsSync(CUSTOM_SKILLS_DIR)) {
+        fs.mkdirSync(CUSTOM_SKILLS_DIR, { recursive: true });
+      }
+      const destPath = path.join(CUSTOM_SKILLS_DIR, filename);
+      fs.writeFileSync(destPath, code, 'utf8');
+      appendLog(`skill uploaded: ${filename}`);
+      // Hot-reload
+      skills = loadSkills();
+      const uploadedDecls = (skills.find((s) => s.id === filename.replace('.skill.js', ''))?.toolDeclarations || []).length;
+      return { ok: true, filename, toolCount: uploadedDecls };
+    }
+
+    case 'list_custom_skills': {
+      if (!fs.existsSync(CUSTOM_SKILLS_DIR)) {
+        return { skills: [] };
+      }
+      const files = fs.readdirSync(CUSTOM_SKILLS_DIR).filter((f) => f.endsWith('.skill.js'));
+      const result = files.map((filename) => {
+        const filePath = path.join(CUSTOM_SKILLS_DIR, filename);
+        const stat = fs.statSync(filePath);
+        const loaded = skills.find((s) => s.id === filename.replace('.skill.js', ''));
+        return {
+          filename,
+          name: loaded?.name || filename,
+          enabled: loaded?.enabled !== false,
+          toolCount: (loaded?.toolDeclarations || []).length,
+          updatedAt: stat.mtimeMs,
+        };
+      });
+      return { skills: result };
+    }
+
+    case 'delete_custom_skill': {
+      const filename = String(args.filename || '').trim();
+      if (!filename.endsWith('.skill.js') || filename.includes('/') || filename.includes('..')) {
+        return { ok: false, error: 'invalid filename' };
+      }
+      const targetPath = path.join(CUSTOM_SKILLS_DIR, filename);
+      if (!fs.existsSync(targetPath)) {
+        return { ok: false, error: `Skill file not found: ${filename}` };
+      }
+      fs.unlinkSync(targetPath);
+      appendLog(`skill deleted: ${filename}`);
+      // Hot-reload
+      jsSkillHandlers.clear();
+      skills = loadSkills();
+      return { ok: true, filename };
+    }
+
+    case 'reload_skills': {
+      jsSkillHandlers.clear();
+      skills = loadSkills();
+      return { ok: true, skillCount: skills.length, jsHandlerCount: jsSkillHandlers.size };
+    }
+    // ── End skill management ─────────────────────────────────────────────────
+
     case 'runTask':
       return { job: createJob(normalizeText(args.taskName) || 'generic-task', args) };
     case 'listJobs':
