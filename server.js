@@ -809,9 +809,27 @@ async function generateGeminiReply(thread) {
     throw new Error(json?.error?.message || json?.error || `Gemini backend error ${response.status}`);
   }
 
+  const text = normalizeText(json.text || '');
+  const functionCalls = json.functionCalls || [];
+
+  if (!text && functionCalls.length === 0) {
+    let reason = '';
+    if (json.promptFeedback && json.promptFeedback.blockReason) {
+      reason = ` [Blocked: ${json.promptFeedback.blockReason}]`;
+    } else if (json.candidates && json.candidates[0] && json.candidates[0].finishReason && json.candidates[0].finishReason !== 'STOP') {
+      reason = ` [Finish Reason: ${json.candidates[0].finishReason}]`;
+    }
+    appendLog(`Warning: Gemini returned empty content.${reason} Raw response: ${JSON.stringify(json)}`);
+    return {
+      text: `Gemini returned an empty reply.${reason}`,
+      functionCalls: [],
+      raw: json,
+    };
+  }
+
   return {
-    text: normalizeText(json.text || ''),
-    functionCalls: json.functionCalls || [],
+    text,
+    functionCalls,
     raw: json,
   };
 }
@@ -1289,7 +1307,7 @@ function buildDayPlan(args) {
   return lines.join('\n');
 }
 
-function setAlarm(args) {
+async function setAlarm(args) {
   const label = normalizeText(args.label || 'Idan Alarm') || 'Idan Alarm';
   const timeStr = normalizeText(args.time || '');
   let hour = 8;
@@ -1308,12 +1326,70 @@ function setAlarm(args) {
   }
 
   const cmd = `am start --user 0 -a android.intent.action.SET_ALARM --ei android.intent.extra.alarm.HOUR ${hour} --ei android.intent.extra.alarm.MINUTES ${minutes} --es android.intent.extra.alarm.MESSAGE "${label.replace(/"/g, '\\"')}" --ez android.intent.extra.alarm.SKIP_UI true`;
+  
+  let success = false;
+  let errorMsg = '';
+  try {
+    const stdout = await executeShell(cmd);
+    if (stdout.includes('Error') || stdout.includes('Exception') || stdout.includes('SecurityException') || stdout.includes('Permission Denial')) {
+      errorMsg = stdout.trim();
+    } else {
+      success = true;
+    }
+  } catch (err) {
+    errorMsg = err.message;
+  }
 
-  executeShell(cmd).catch((err) => {
-    appendLog(`am start SET_ALARM intent failed: ${err.message}`);
-  });
+  if (!success) {
+    try {
+      const fallbackCmd = `am start -a android.intent.action.SET_ALARM --ei android.intent.extra.alarm.HOUR ${hour} --ei android.intent.extra.alarm.MINUTES ${minutes} --es android.intent.extra.alarm.MESSAGE "${label.replace(/"/g, '\\"')}" --ez android.intent.extra.alarm.SKIP_UI true`;
+      const stdout = await executeShell(fallbackCmd);
+      if (!stdout.includes('Error') && !stdout.includes('Exception') && !stdout.includes('SecurityException')) {
+        success = true;
+      } else {
+        errorMsg = stdout.trim();
+      }
+    } catch (err) {
+      errorMsg = err.message;
+    }
+  }
 
-  return { label, hour, minutes, message: `Alarm set for ${String(hour).padStart(2, '0')}:${String(minutes).padStart(2, '0')}: "${label}".` };
+  if (!success) {
+    appendLog(`am start SET_ALARM failed: ${errorMsg}. Falling back to engine-scheduled reminder alarm.`);
+    const now = new Date();
+    const due = new Date();
+    due.setHours(hour, minutes, 0, 0);
+    if (due.getTime() <= now.getTime()) {
+      due.setDate(due.getDate() + 1);
+    }
+    
+    const reminder = {
+      id: `rem_alarm_${Date.now()}`,
+      title: `Alarm: ${label}`,
+      dueAt: due.getTime(),
+      notes: 'Scheduled via alarm fallback.',
+      recurrence: 'once',
+      createdAt: Date.now(),
+    };
+    reminders.push(reminder);
+    saveAll();
+    
+    return {
+      success: true,
+      label,
+      hour,
+      minutes,
+      message: `Native alarm failed (${errorMsg.slice(0, 60)}). Scheduled background engine alarm instead for ${String(hour).padStart(2, '0')}:${String(minutes).padStart(2, '0')}.`
+    };
+  }
+
+  return {
+    success: true,
+    label,
+    hour,
+    minutes,
+    message: `Alarm set successfully for ${String(hour).padStart(2, '0')}:${String(minutes).padStart(2, '0')}: "${label}".`
+  };
 }
 
 let autoReplyInstruction = null;
@@ -1432,6 +1508,12 @@ function checkDueReminders() {
         .catch((err) => {
           appendLog(`termux-notification failed: ${err.message}`);
         });
+
+      executeShell(`termux-tts-speak "Reminder: ${reminder.title.replace(/"/g, '\\"')}"`)
+        .catch(() => {});
+
+      executeShell('termux-vibrate -d 1000 -f')
+        .catch(() => {});
 
       if (reminder.recurrence === 'daily') {
         reminder.dueAt = Number(reminder.dueAt) + 24 * 60 * 60 * 1000;
@@ -2669,4 +2751,5 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, HOST, () => {
   appendLog(`listening on http://${HOST}:${PORT}`);
   console.log(`Idan engine listening on http://${HOST}:${PORT}`);
+  executeShell('termux-wake-lock').catch(() => {});
 });
