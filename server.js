@@ -1162,7 +1162,8 @@ function ensureRecurringTimers() {
 
 async function executeShell(command) {
   let cmd = 'sh';
-  let args = ['-lc', command];
+  // Do NOT use -l (login shell) — it breaks PATH and profile sourcing on Termux
+  let args = ['-c', command];
 
   if (process.platform === 'win32') {
     const androidCmds = ['dumpsys', 'getprop', 'termux-flashlight', 'termux-wifi-enable', 'termux-volume', 'am', 'pm', 'cmd', 'svc'];
@@ -1176,11 +1177,16 @@ async function executeShell(command) {
     }
   }
 
-  const { stdout } = await execFileAsync(cmd, args, {
-    cwd: DATA_DIR,
-    maxBuffer: 1024 * 1024 * 8,
-  });
-  return String(stdout || '');
+  try {
+    const { stdout } = await execFileAsync(cmd, args, {
+      cwd: DATA_DIR,
+      maxBuffer: 1024 * 1024 * 8,
+    });
+    return String(stdout || '');
+  } catch (error) {
+    appendLog(`shell command failed: ${command} — ${error.message}`);
+    throw error;
+  }
 }
 
 async function visitWebsite(url, headers = {}) {
@@ -1469,36 +1475,56 @@ async function handleCommand(command, args, req, payload) {
       {
         const state = args.state || 'on';
         const isOn = state === 'on';
-        await executeShell(`am broadcast -a miui.intent.action.TOGGLE_TORCH --ez state ${isOn}`).catch(() => {});
-        await executeShell(`termux-flashlight ${state}`).catch(() => {});
-        return { action: 'toggle-flashlight', state };
+        const flashErrors = [];
+        // termux-torch is the correct Termux:API command (requires Termux:API app installed)
+        const flashResult = await executeShell(`termux-torch ${state}`)
+          .catch((e) => { flashErrors.push(`termux-torch: ${e.message}`); return null; });
+        // Fallback: MIUI torch broadcast
+        if (flashResult === null) {
+          await executeShell(`am broadcast -a miui.intent.action.TOGGLE_TORCH --ez state ${isOn}`)
+            .catch((e) => { flashErrors.push(`am broadcast: ${e.message}`); });
+        }
+        if (flashErrors.length > 0) appendLog(`toggle_flashlight errors: ${flashErrors.join('; ')}`);
+        return { action: 'toggle-flashlight', state, ok: flashErrors.length < 2 };
       }
     case 'set_volume':
       {
         const pct = Number(args.percent || args.level || 50);
         const level15 = Math.round((pct / 100) * 15);
-        await executeShell(`termux-volume music ${level15}`).catch(() => {});
-        await executeShell(`cmd audio volume set-volume 3 ${level15}`).catch(() => {});
-        return { action: 'set-volume', stream: args.stream, level: args.level, percent: pct };
+        const volErrors = [];
+        await executeShell(`termux-volume music ${level15}`)
+          .catch((e) => { volErrors.push(`termux-volume: ${e.message}`); });
+        await executeShell(`cmd audio volume set-volume 3 ${level15}`)
+          .catch((e) => { volErrors.push(`cmd audio: ${e.message}`); });
+        if (volErrors.length > 0) appendLog(`set_volume errors: ${volErrors.join('; ')}`);
+        return { action: 'set-volume', stream: args.stream, level: args.level, percent: pct, ok: volErrors.length < 2 };
       }
     case 'set_wifi':
       {
         const enabled = Boolean(args.enabled);
-        await executeShell(`termux-wifi-enable ${enabled}`).catch(() => {});
-        await executeShell(`svc wifi ${enabled ? 'enable' : 'disable'}`).catch(() => {});
-        return { action: 'set-wifi', enabled };
+        const wifiErrors = [];
+        await executeShell(`termux-wifi-enable ${enabled}`)
+          .catch((e) => { wifiErrors.push(`termux-wifi-enable: ${e.message}`); });
+        await executeShell(`svc wifi ${enabled ? 'enable' : 'disable'}`)
+          .catch((e) => { wifiErrors.push(`svc wifi: ${e.message}`); });
+        if (wifiErrors.length > 0) appendLog(`set_wifi errors: ${wifiErrors.join('; ')}`);
+        return { action: 'set-wifi', enabled, ok: wifiErrors.length < 2 };
       }
     case 'set_mobile_data':
       {
         const enabled = Boolean(args.enabled);
-        await executeShell(`svc data ${enabled ? 'enable' : 'disable'}`).catch(() => {});
-        return { action: 'set-mobile-data', enabled };
+        const dataErr = await executeShell(`svc data ${enabled ? 'enable' : 'disable'}`)
+          .then(() => null).catch((e) => e.message);
+        if (dataErr) appendLog(`set_mobile_data error: ${dataErr}`);
+        return { action: 'set-mobile-data', enabled, ok: !dataErr };
       }
     case 'set_dnd':
       {
         const enabled = Boolean(args.enabled);
-        await executeShell(`cmd notification set_dnd_zen ${enabled ? 1 : 0}`).catch(() => {});
-        return { action: 'set-dnd', enabled };
+        const dndErr = await executeShell(`cmd notification set_dnd_zen ${enabled ? 1 : 0}`)
+          .then(() => null).catch((e) => e.message);
+        if (dndErr) appendLog(`set_dnd error: ${dndErr}`);
+        return { action: 'set-dnd', enabled, ok: !dndErr };
       }
 
     // Notifications aliases

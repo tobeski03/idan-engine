@@ -16,14 +16,14 @@ and communicate with the Android app over local HTTP on port `3788`.
 Open Termux and run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<your-user>/<your-repo>/main/engine/install-termux.sh | bash -s -- <repo-url> <pairing-token>
+curl -fsSL https://raw.githubusercontent.com/tobeski03/idan-engine/main/engine/install-termux.sh | bash
 ```
 
 Or clone first then run the installer:
 
 ```bash
-git clone <repo-url> ~/idan-engine
-bash ~/idan-engine/install-termux.sh <repo-url> <pairing-token>
+git clone https://github.com/tobeski03/idan-engine ~/idan-engine
+bash ~/idan-engine/install-termux.sh
 ```
 
 The script will:
