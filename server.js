@@ -1265,13 +1265,58 @@ function ensureRecurringTimers() {
     const timer = setInterval(() => {
       appendLog(`recurring task tick ${task.id}`);
       if (task.shellCommand) {
-        execFileAsync('sh', ['-lc', task.shellCommand], { cwd: DATA_DIR }).catch((error) => {
-          appendLog(`recurring task ${task.id} failed: ${error.message}`);
+        executeShell(task.shellCommand).catch((error) => {
+          appendLog(`recurring task ${task.id} shell failed: ${error.message}`);
+        });
+      }
+      if (task.jsScript) {
+        safeEval(task.jsScript, buildBridgeContext()).catch((error) => {
+          appendLog(`recurring task ${task.id} jsScript failed: ${error.message}`);
         });
       }
     }, task.intervalMs);
     recurringTimers.set(task.id, timer);
   }
+}
+
+function checkDueReminders() {
+  const now = Date.now();
+  let changed = false;
+
+  for (const reminder of reminders) {
+    if (Number(reminder.dueAt) <= now && !reminder.triggered) {
+      appendLog(`reminder triggering: ${reminder.title}`);
+
+      // Send Android notification via Termux API
+      const notificationTitle = `Reminder: ${reminder.title}`;
+      const notificationText = reminder.notes || 'Time to get it done!';
+
+      executeShell(`termux-notification -t "${notificationTitle.replace(/"/g, '\\"')}" -c "${notificationText.replace(/"/g, '\\"')}" --sound`)
+        .catch((err) => {
+          appendLog(`termux-notification failed: ${err.message}`);
+        });
+
+      if (reminder.recurrence === 'daily') {
+        reminder.dueAt = Number(reminder.dueAt) + 24 * 60 * 60 * 1000;
+        changed = true;
+      } else if (reminder.recurrence === 'weekly') {
+        reminder.dueAt = Number(reminder.dueAt) + 7 * 24 * 60 * 60 * 1000;
+        changed = true;
+      } else {
+        reminder.triggered = true;
+        changed = true;
+      }
+    }
+  }
+
+  if (changed) {
+    reminders = reminders.filter((r) => !r.triggered);
+    saveAll();
+  }
+}
+
+function startRemindersScheduler() {
+  setInterval(checkDueReminders, 15000);
 }
 
 async function executeShell(command) {
@@ -2411,6 +2456,7 @@ async function handleCommand(command, args, req, payload) {
 }
 
 ensureRecurringTimers();
+startRemindersScheduler();
 appendLog(`engine started v${VERSION}`);
 
 const server = http.createServer(async (req, res) => {
