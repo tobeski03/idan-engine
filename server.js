@@ -141,23 +141,69 @@ let emailWatchRules = readJsonFile(EMAIL_WATCH_FILE, []);
 let chats = readJsonFile(CHATS_FILE, { threads: {} });
 
 const SKILLS_DIR = path.join(DATA_DIR, 'skills');
+const CUSTOM_SKILLS_DIR = path.join(SKILLS_DIR, 'custom');
 let skills = [];
+// Map of tool name → JS skill handler function
+const jsSkillHandlers = new Map();
 
 function loadSkills() {
   try {
-    if (!fs.existsSync(SKILLS_DIR)) {
-      return [];
-    }
-    const files = fs.readdirSync(SKILLS_DIR);
     const loaded = [];
-    for (const file of files) {
-      if (file.endsWith('.skill.json')) {
-        const filePath = path.join(SKILLS_DIR, file);
-        const content = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-        loaded.push(content);
+
+    // ── Load built-in JSON skill declarations ─────────────────────────────
+    if (fs.existsSync(SKILLS_DIR)) {
+      const files = fs.readdirSync(SKILLS_DIR);
+      for (const file of files) {
+        if (file.endsWith('.skill.json')) {
+          const filePath = path.join(SKILLS_DIR, file);
+          try {
+            const content = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+            loaded.push(content);
+          } catch (e) {
+            appendLog(`error loading skill ${file}: ${e.message}`);
+          }
+        }
       }
     }
-    appendLog(`loaded ${loaded.length} skills`);
+
+    // ── Load custom JS skills from skills/custom/*.skill.js ───────────────
+    if (fs.existsSync(CUSTOM_SKILLS_DIR)) {
+      const customFiles = fs.readdirSync(CUSTOM_SKILLS_DIR);
+      for (const file of customFiles) {
+        if (file.endsWith('.skill.js')) {
+          const filePath = path.join(CUSTOM_SKILLS_DIR, file);
+          try {
+            // Clear require cache so hot-reload works after update.sh
+            delete require.cache[require.resolve(filePath)];
+            const skill = require(filePath);
+            if (!skill || typeof skill !== 'object') {
+              appendLog(`custom skill ${file}: module.exports must be an object`);
+              continue;
+            }
+            // Register tool declarations
+            loaded.push({
+              id: skill.id || file.replace('.skill.js', ''),
+              name: skill.name || file,
+              enabled: skill.enabled !== false,
+              toolDeclarations: Array.isArray(skill.toolDeclarations) ? skill.toolDeclarations : [],
+            });
+            // Register handler for each declared tool
+            if (typeof skill.handleTool === 'function' && Array.isArray(skill.toolDeclarations)) {
+              for (const decl of skill.toolDeclarations) {
+                if (decl && decl.name) {
+                  jsSkillHandlers.set(decl.name, skill.handleTool.bind(skill));
+                }
+              }
+            }
+            appendLog(`loaded custom JS skill: ${file}`);
+          } catch (e) {
+            appendLog(`error loading custom skill ${file}: ${e.message}`);
+          }
+        }
+      }
+    }
+
+    appendLog(`loaded ${loaded.length} skills (${jsSkillHandlers.size} JS handlers)`);
     return loaded;
   } catch (error) {
     appendLog(`error loading skills: ${error.message}`);
@@ -657,10 +703,75 @@ async function googleApiFetch(apiBaseUrl, pathSuffix, options = {}) {
 }
 
 function chatContentFromMessage(message) {
+  // Gemini only accepts 'user' or 'model' roles.
+  // Function responses must be sent as role='user' with functionResponse parts.
   return {
-    role: message.role === 'assistant' ? 'model' : message.role === 'function' ? 'function' : 'user',
+    role: message.role === 'assistant' ? 'model' : 'user',
     parts: message.parts || [{ text: normalizeText(message.content) }],
   };
+}
+
+/**
+ * Sanitize the contents array before sending to Gemini to prevent 400 errors.
+ *
+ * Gemini enforces:
+ *   user → model(functionCall) → user(functionResponse) → model → ...
+ *
+ * Common violations that must be fixed:
+ *  1. A 'model' turn with functionCall parts that has no following functionResponse
+ *     (happens when a previous request crashed mid-loop). Strip the orphan.
+ *  2. Two consecutive 'model' turns (can happen if an error message was appended
+ *     after a tool call). Strip the second.
+ *  3. History must not start with a 'model' turn.
+ */
+function sanitizeContentsForGemini(contents) {
+  if (!Array.isArray(contents) || contents.length === 0) return contents;
+
+  let result = [...contents];
+
+  // Pass 1: remove orphaned trailing functionCall turns
+  // Walk backwards; if the last model turn has functionCall parts but is not
+  // immediately followed by a user turn with functionResponse parts, remove it.
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = result.length - 1; i >= 0; i--) {
+      const turn = result[i];
+      const hasFunctionCall = Array.isArray(turn.parts) && turn.parts.some((p) => p.functionCall);
+      if (turn.role === 'model' && hasFunctionCall) {
+        const nextTurn = result[i + 1];
+        const nextHasResponse = nextTurn && nextTurn.role === 'user' &&
+          Array.isArray(nextTurn.parts) && nextTurn.parts.some((p) => p.functionResponse);
+        if (!nextHasResponse) {
+          // Orphaned functionCall — remove it and the user message that preceded it
+          // (so we don't end up with model following model)
+          result.splice(i, 1);
+          changed = true;
+          break;
+        }
+      }
+    }
+  }
+
+  // Pass 2: remove consecutive model turns
+  changed = true;
+  while (changed) {
+    changed = false;
+    for (let i = 0; i < result.length - 1; i++) {
+      if (result[i].role === 'model' && result[i + 1].role === 'model') {
+        result.splice(i + 1, 1);
+        changed = true;
+        break;
+      }
+    }
+  }
+
+  // Pass 3: history must not start with a model turn
+  while (result.length > 0 && result[0].role === 'model') {
+    result.shift();
+  }
+
+  return result;
 }
 
 async function generateGeminiReply(thread) {
@@ -670,8 +781,11 @@ async function generateGeminiReply(thread) {
   }
 
   const googleAccessToken = await ensureGoogleAccessToken();
-  const history = Array.isArray(thread?.messages) ? thread.messages.slice(-20).filter((message) => message.role === 'user' || message.role === 'assistant' || message.role === 'function') : [];
-  const contents = history.map((message) => chatContentFromMessage(message));
+  const history = Array.isArray(thread?.messages)
+    ? thread.messages.slice(-30).filter((m) => m.role === 'user' || m.role === 'assistant' || m.role === 'function')
+    : [];
+  const rawContents = history.map((message) => chatContentFromMessage(message));
+  const contents = sanitizeContentsForGemini(rawContents);
 
   const declarations = getAllToolDeclarations();
   const toolsPayload = declarations.length > 0 ? [{ functionDeclarations: declarations }] : undefined;
@@ -1452,13 +1566,30 @@ async function handleCommand(command, args, req, payload) {
       return { action: 'share-text', text: args.text };
 
     // Basic Phone aliases
-    case 'search_contacts':
-      return {
-        contacts: [
-          { name: 'John Doe', phone: '+15551234567' },
-          { name: 'Jane Smith', phone: '+15557654321' }
-        ].filter(c => c.name.toLowerCase().includes(String(args.query || '').toLowerCase()))
-      };
+    case 'search_contacts': {
+      const query = String(args.query || '').toLowerCase().trim();
+      let contacts = [];
+      try {
+        // termux-contact-list returns a JSON array of {name, number}
+        const raw = await executeShell('termux-contact-list');
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          contacts = parsed
+            .filter((c) => {
+              if (!query) return true;
+              const name = String(c.name || '').toLowerCase();
+              const number = String(c.number || c.phone || '').toLowerCase();
+              return name.includes(query) || number.includes(query);
+            })
+            .slice(0, 20)
+            .map((c) => ({ name: c.name || '', phone: c.number || c.phone || '' }));
+        }
+      } catch (e) {
+        appendLog(`search_contacts failed: ${e.message}`);
+        // Fall back gracefully — model will get an empty list
+      }
+      return { contacts };
+    }
     case 'check_contact_exists':
       return { exists: true };
     case 'get_recent_missed_calls':
@@ -2096,8 +2227,24 @@ async function handleCommand(command, args, req, payload) {
         action: 'open-url',
         url: normalizeText(args.url || args.link || ''),
       };
-    default:
+    default: {
+      // ── JS custom skill dispatch ──────────────────────────────────────────
+      // Check if a loaded .skill.js file registered a handler for this command
+      const jsHandler = jsSkillHandlers.get(command);
+      if (jsHandler) {
+        const ctx = buildBridgeContext();
+        ctx.appendLog = appendLog;
+        ctx.rememberRecord = rememberRecord;
+        ctx.searchMemory = searchMemory;
+        try {
+          return await jsHandler(command, args, ctx);
+        } catch (e) {
+          appendLog(`JS skill handler '${command}' threw: ${e.message}`);
+          return { ok: false, error: e.message };
+        }
+      }
       return { message: `Unsupported command: ${command}` };
+    }
   }
 }
 
