@@ -2600,7 +2600,7 @@ async function handleCommand(command, args, req, payload) {
             }));
             appendChatMessage(threadId, 'assistant', '', parts);
 
-            // Execute each call and append functionResponse
+            const responseParts = [];
             for (const call of result.functionCalls) {
               appendLog(`engine executing tool: ${call.name} with args ${JSON.stringify(call.args)}`);
               let executionResult;
@@ -2611,14 +2611,14 @@ async function handleCommand(command, args, req, payload) {
                 executionResult = { ok: false, error: e.message };
               }
 
-              // Append functionResponse message
-              appendChatMessage(threadId, 'function', '', [{
+              responseParts.push({
                 functionResponse: {
                   name: call.name,
                   response: executionResult,
                 },
-              }]);
+              });
             }
+            appendChatMessage(threadId, 'function', '', responseParts);
 
             // Continue the loop to call Gemini again with the tool output
             continue;
