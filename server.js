@@ -283,6 +283,7 @@ function snapshot() {
     planCount: plans.length,
     connectorCount: connectors.length,
     chatThreadCount: Object.keys(chats.threads || {}).length,
+    activeAlarms: Array.from(activeRingingAlarms),
   };
 }
 
@@ -1392,6 +1393,40 @@ async function setAlarm(args) {
   };
 }
 
+let activeRingingAlarms = new Set();
+let alarmIntervalId = null;
+
+function startAlarmLoop(alarmId, label) {
+  activeRingingAlarms.add(`${label} (${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`);
+  appendLog(`Alarm loop started for: ${label}`);
+  
+  if (alarmIntervalId) return;
+  
+  executeShell('termux-vibrate -d 2000 -f').catch(() => {});
+  executeShell(`termux-tts-speak "Alarm: ${label.replace(/"/g, '\\"')}"`).catch(() => {});
+  
+  alarmIntervalId = setInterval(() => {
+    if (activeRingingAlarms.size === 0) {
+      clearInterval(alarmIntervalId);
+      alarmIntervalId = null;
+      return;
+    }
+    executeShell('termux-vibrate -d 2000 -f').catch(() => {});
+    const currentLabel = Array.from(activeRingingAlarms)[0] || 'Alarm';
+    const cleanLabel = currentLabel.split(' (')[0];
+    executeShell(`termux-tts-speak "Alarm: ${cleanLabel.replace(/"/g, '\\"')}. Please dismiss or snooze."`).catch(() => {});
+  }, 4000);
+}
+
+function dismissAlarm() {
+  activeRingingAlarms.clear();
+  if (alarmIntervalId) {
+    clearInterval(alarmIntervalId);
+    alarmIntervalId = null;
+  }
+  return { success: true, message: 'All active alarms dismissed.' };
+}
+
 let autoReplyInstruction = null;
 
 async function listNotifications(args) {
@@ -1509,11 +1544,7 @@ function checkDueReminders() {
           appendLog(`termux-notification failed: ${err.message}`);
         });
 
-      executeShell(`termux-tts-speak "Reminder: ${reminder.title.replace(/"/g, '\\"')}"`)
-        .catch(() => {});
-
-      executeShell('termux-vibrate -d 1000 -f')
-        .catch(() => {});
+      startAlarmLoop(reminder.id, reminder.title);
 
       if (reminder.recurrence === 'daily') {
         reminder.dueAt = Number(reminder.dueAt) + 24 * 60 * 60 * 1000;
@@ -2294,6 +2325,8 @@ async function handleCommand(command, args, req, payload) {
       return { removed: cancelReminder(args) };
     case 'set_alarm':
       return setAlarm(args);
+    case 'dismiss_alarm':
+      return dismissAlarm();
     case 'plan_my_day':
       return { plan: buildDayPlan(args), text: buildDayPlan(args) };
     case 'schedule_recurring_task':
