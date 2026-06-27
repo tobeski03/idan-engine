@@ -1193,11 +1193,35 @@ function listPlans() {
   return plans;
 }
 
+function parseLocalDateTime(value) {
+  const normalized = String(value || '').trim();
+  if (/^\d{10,13}$/.test(normalized)) {
+    return new Date(Number(normalized));
+  }
+  const date = new Date(normalized);
+  if (!Number.isNaN(date.getTime())) return date;
+
+  const timeOnly = normalized.match(/^(\d{1,2}):(\d{2})$/);
+  if (timeOnly) {
+    const next = new Date();
+    next.setHours(Number(timeOnly[1]), Number(timeOnly[2]), 0, 0);
+    if (next.getTime() <= Date.now()) next.setDate(next.getDate() + 1);
+    return next;
+  }
+
+  const spaced = normalized.replace(' ', 'T');
+  const d2 = new Date(spaced);
+  if (!Number.isNaN(d2.getTime())) return d2;
+
+  return new Date();
+}
+
 function createReminder(args) {
+  const due = parseLocalDateTime(args.dueAt);
   const reminder = {
     id: `rem_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     title: normalizeText(args.title),
-    dueAt: Number(args.dueAt),
+    dueAt: due.getTime(),
     notes: args.notes ? normalizeText(args.notes) : undefined,
     recurrence: ['daily', 'weekly'].includes(args.recurrence) ? args.recurrence : 'once',
     createdAt: Date.now(),
@@ -1227,6 +1251,119 @@ function cancelReminder(args) {
   const removed = before - reminders.length;
   if (removed > 0) saveAll();
   return removed;
+}
+
+function buildDayPlan(args) {
+  const priorities = Array.isArray(args.priorities) ? args.priorities.filter(Boolean).map(String) : [];
+  const commitments = Array.isArray(args.commitments) ? args.commitments.filter(Boolean).map(String) : [];
+  const memorySummary = String(args.memorySummary || '').trim();
+  const window = String(args.availableHours || '09:00-21:00');
+  const energy = String(args.energy || 'normal');
+
+  const focusBlock = energy === 'low' ? 'one gentle focus block' : energy === 'high' ? 'two deep focus blocks' : 'one deep focus block';
+  const topPriorities = priorities.length > 0 ? priorities.slice(0, 4) : ['choose the top 3 outcomes for today'];
+
+  const lines = [
+    `Day plan for ${args.date || 'today'}`,
+    `Window: ${window}. Pace: ${energy}.`,
+    '',
+    `1. Start: review commitments, pick ${topPriorities.length} priority item${topPriorities.length === 1 ? '' : 's'}, and clear quick blockers.`,
+    `2. Focus: protect ${focusBlock} for ${topPriorities[0]}.`,
+    `3. Admin: batch messages, calls, errands, and small follow-ups into one shorter block.`,
+    `4. Reset: leave a buffer before evening so the plan can survive real life.`,
+    `5. Close: write tomorrow's first action before stopping.`,
+  ];
+
+  if (topPriorities.length > 0) {
+    lines.push('', 'Priorities:', ...topPriorities.map((item, index) => `${index + 1}. ${item}`));
+  }
+
+  if (commitments.length > 0) {
+    lines.push('', 'Fixed commitments:', ...commitments.map((item) => `- ${item}`));
+  }
+
+  if (memorySummary) {
+    lines.push('', `Memory used: ${memorySummary}`);
+  }
+
+  return lines.join('\n');
+}
+
+function setAlarm(args) {
+  const label = normalizeText(args.label || 'Idan Alarm') || 'Idan Alarm';
+  const timeStr = normalizeText(args.time || '');
+  let hour = 8;
+  let minutes = 0;
+
+  const timeMatch = timeStr.match(/^(\d{1,2}):(\d{2})$/);
+  if (timeMatch) {
+    hour = parseInt(timeMatch[1], 10);
+    minutes = parseInt(timeMatch[2], 10);
+  } else {
+    const d = new Date(timeStr);
+    if (!isNaN(d.getTime())) {
+      hour = d.getHours();
+      minutes = d.getMinutes();
+    }
+  }
+
+  const cmd = `am start --user 0 -a android.intent.action.SET_ALARM --ei android.intent.extra.alarm.HOUR ${hour} --ei android.intent.extra.alarm.MINUTES ${minutes} --es android.intent.extra.alarm.MESSAGE "${label.replace(/"/g, '\\"')}" --ez android.intent.extra.alarm.SKIP_UI true`;
+
+  executeShell(cmd).catch((err) => {
+    appendLog(`am start SET_ALARM intent failed: ${err.message}`);
+  });
+
+  return { label, hour, minutes, message: `Alarm set for ${String(hour).padStart(2, '0')}:${String(minutes).padStart(2, '0')}: "${label}".` };
+}
+
+let autoReplyInstruction = null;
+
+async function listNotifications(args) {
+  try {
+    const raw = await executeShell('termux-notification-list');
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return { notifications: [] };
+    const limit = Number(args.limit) || 10;
+    const pkg = args.packageName ? String(args.packageName).toLowerCase() : '';
+    const filtered = parsed
+      .filter((n) => !pkg || String(n.packageName || '').toLowerCase().includes(pkg))
+      .slice(0, limit)
+      .map((n) => ({
+        id: String(n.id || n.key || ''),
+        packageName: n.packageName || '',
+        title: n.title || '',
+        content: n.content || '',
+      }));
+    return { notifications: filtered };
+  } catch (e) {
+    appendLog(`listNotifications failed: ${e.message}`);
+    return { notifications: [], error: e.message };
+  }
+}
+
+async function openNotificationSettings() {
+  await executeShell('am start --user 0 -a android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS').catch(() => {});
+  return { message: 'Opened Android Notification Listener settings page.' };
+}
+
+async function openNotification(args) {
+  const pkg = args.packageName || 'com.whatsapp';
+  await executeShell(`monkey -p ${pkg} -c android.intent.category.LAUNCHER 1`).catch(() => {});
+  return { message: `Opened app ${pkg} to view notification.` };
+}
+
+function configureNotificationAutoReply(args) {
+  autoReplyInstruction = args.instructions || null;
+  return { message: `Auto reply configured: "${autoReplyInstruction}".` };
+}
+
+function showNotificationAutoReply() {
+  return { enabled: !!autoReplyInstruction, instructions: autoReplyInstruction };
+}
+
+function clearNotificationAutoReply() {
+  autoReplyInstruction = null;
+  return { message: 'Auto reply disabled.' };
 }
 
 function scheduleRecurringTask(args) {
@@ -1797,19 +1934,25 @@ async function handleCommand(command, args, req, payload) {
 
     // Notifications aliases
     case 'configure_notification_auto_reply':
+      return configureNotificationAutoReply(args);
     case 'show_notification_auto_reply':
+      return showNotificationAutoReply();
     case 'clear_notification_auto_reply':
+      return clearNotificationAutoReply();
     case 'list_notifications':
+      return listNotifications(args);
     case 'open_notification':
     case 'reply_to_latest_notification':
+      return openNotification(args);
     case 'open_notification_settings':
-      return { action: 'notification-action', command, args };
+      return openNotificationSettings();
 
     // Phone Macro aliases
     case 'list_macro_actions':
       return { actions: [] };
 
     // Self-Improving App Navigator aliases
+    case 'open_demo_recorder_settings':
     case 'open_demo_overlay_settings':
     case 'show_demo_overlay':
     case 'hide_demo_overlay':
@@ -2068,9 +2211,9 @@ async function handleCommand(command, args, req, payload) {
     case 'cancel_reminder':
       return { removed: cancelReminder(args) };
     case 'set_alarm':
-      return { message: `Alarm request recorded for ${normalizeText(args.time)}.` };
+      return setAlarm(args);
     case 'plan_my_day':
-      return { text: `Day plan placeholder for ${normalizeText(args.date || 'today')}` };
+      return { plan: buildDayPlan(args), text: buildDayPlan(args) };
     case 'schedule_recurring_task':
       return { task: scheduleRecurringTask(args) };
     case 'list_recurring_tasks':
