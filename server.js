@@ -1214,7 +1214,8 @@ function listPlans() {
 
 function parseLocalDateTime(value) {
   const normalized = String(value || '').trim();
-  
+  let resDate = null;
+
   // Handle relative offset strings like "+5m", "+10m", "+1h", "+30s", "in 5 minutes", "in 1 hour"
   const relativeMatch = normalized.match(/(?:\+|in\s+)?(\d+)\s*(s|sec|seconds?|m|min|minutes?|h|hr|hours?|d|days?)/i);
   if (relativeMatch) {
@@ -1230,28 +1231,45 @@ function parseLocalDateTime(value) {
     } else if (unit.startsWith('d')) {
       date.setDate(date.getDate() + amount);
     }
-    return date;
+    resDate = date;
+  } else if (/^\d{10,13}$/.test(normalized)) {
+    resDate = new Date(Number(normalized));
+  } else {
+    const date = new Date(normalized);
+    if (!Number.isNaN(date.getTime())) {
+      resDate = date;
+    } else {
+      const timeOnly = normalized.match(/^(\d{1,2}):(\d{2})$/);
+      if (timeOnly) {
+        const next = new Date();
+        next.setHours(Number(timeOnly[1]), Number(timeOnly[2]), 0, 0);
+        resDate = next;
+      } else {
+        const spaced = normalized.replace(' ', 'T');
+        const d2 = new Date(spaced);
+        if (!Number.isNaN(d2.getTime())) {
+          resDate = d2;
+        } else {
+          resDate = new Date();
+        }
+      }
+    }
   }
 
-  if (/^\d{10,13}$/.test(normalized)) {
-    return new Date(Number(normalized));
+  // Auto-correct past dates (e.g. 12-hour AM/PM ambiguities or rollover to tomorrow)
+  const now = Date.now();
+  if (resDate && resDate.getTime() <= now) {
+    if (!relativeMatch) {
+      const plus12 = new Date(resDate.getTime() + 12 * 60 * 60 * 1000);
+      if (plus12.getTime() > now) {
+        resDate = plus12;
+      } else {
+        resDate = new Date(resDate.getTime() + 24 * 60 * 60 * 1000);
+      }
+    }
   }
-  const date = new Date(normalized);
-  if (!Number.isNaN(date.getTime())) return date;
 
-  const timeOnly = normalized.match(/^(\d{1,2}):(\d{2})$/);
-  if (timeOnly) {
-    const next = new Date();
-    next.setHours(Number(timeOnly[1]), Number(timeOnly[2]), 0, 0);
-    if (next.getTime() <= Date.now()) next.setDate(next.getDate() + 1);
-    return next;
-  }
-
-  const spaced = normalized.replace(' ', 'T');
-  const d2 = new Date(spaced);
-  if (!Number.isNaN(d2.getTime())) return d2;
-
-  return new Date();
+  return resDate || new Date();
 }
 
 function createReminder(args) {
