@@ -798,7 +798,7 @@ async function generateGeminiReply(thread) {
     },
     body: JSON.stringify({
       model: engineConfig.geminiModel,
-      systemInstruction: CHAT_SYSTEM_PROMPT,
+      systemInstruction: `${CHAT_SYSTEM_PROMPT}\n\nCurrent local time: ${new Date().toString()}.\nCurrent date: ${new Date().toISOString().split('T')[0]}.\nUse this to calculate relative times (like 'in 5 minutes' or 'tomorrow morning') accurately.`,
       contents,
       tools: toolsPayload,
       googleAccessToken,
@@ -1214,6 +1214,25 @@ function listPlans() {
 
 function parseLocalDateTime(value) {
   const normalized = String(value || '').trim();
+  
+  // Handle relative offset strings like "+5m", "+10m", "+1h", "+30s", "in 5 minutes", "in 1 hour"
+  const relativeMatch = normalized.match(/(?:\+|in\s+)?(\d+)\s*(s|sec|seconds?|m|min|minutes?|h|hr|hours?|d|days?)/i);
+  if (relativeMatch) {
+    const amount = parseInt(relativeMatch[1], 10);
+    const unit = relativeMatch[2].toLowerCase();
+    const date = new Date();
+    if (unit.startsWith('s')) {
+      date.setSeconds(date.getSeconds() + amount);
+    } else if (unit.startsWith('m')) {
+      date.setMinutes(date.getMinutes() + amount);
+    } else if (unit.startsWith('h')) {
+      date.setHours(date.getHours() + amount);
+    } else if (unit.startsWith('d')) {
+      date.setDate(date.getDate() + amount);
+    }
+    return date;
+  }
+
   if (/^\d{10,13}$/.test(normalized)) {
     return new Date(Number(normalized));
   }
