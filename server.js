@@ -94,7 +94,8 @@ Key Guidelines:
 4. Separate Google Services:
    - Google App Login is used ONLY for your chat authorization.
    - Google Workspace Integration is used to run Gmail, Sheets, Docs, and Forms locally using local credentials. Do not confuse the two.
-5. Search Fallback: If the user asks about real-time information, current events, facts you are unsure of, or if you do not know the answer, you MUST use the 'google_search' tool to search the web immediately. Never say you do not know or do not have access to real-time information without first running a search.`;
+5. Search Fallback: If the user asks about real-time information, current events, facts you are unsure of, or if you do not know the answer, you MUST use the 'google_search' tool to search the web immediately. Never say you do not know or do not have access to real-time information without first running a search.
+6. Termux Shell Access: You have direct shell access to the Termux Linux environment on the user's Android device via 'run_shell_command'. Use it proactively for tasks like file management, checking installed packages, reading logs, running scripts, checking storage/memory, downloading files with curl/wget, managing cron jobs, or any task that benefits from a terminal. Also use 'read_file', 'write_file', and 'list_directory' for filesystem work. Always show the relevant output to the user.`;
 
 function readJsonFile(file, fallback) {
   try {
@@ -1820,6 +1821,75 @@ async function visitWebsite(url, headers = {}) {
   return text;
 }
 
+function isBotProtectionBlock(pageText) {
+  const lower = pageText.toLowerCase();
+
+  // Generic captcha/verification phrases
+  const genericPhrases = [
+    'verify you are human',
+    'verify that you are human',
+    'please verify you are a human',
+    'are you a human',
+    'prove you are human',
+    'i am not a robot',
+    'i\'m not a robot',
+    'checking your browser',
+    'please wait while we verify',
+    'enable javascript and cookies to continue',
+    'please enable cookies',
+    'browser check',
+    'security check',
+    'access denied',
+    'too many requests',
+    'rate limited',
+    'unusual traffic',
+    'suspicious activity',
+    'automated access',
+    'bot detected',
+  ];
+  if (genericPhrases.some((p) => lower.includes(p))) return true;
+
+  // Cloudflare
+  if (
+    lower.includes('cloudflare') &&
+    (lower.includes('just a moment') ||
+      lower.includes('ray id:') ||
+      lower.includes('cf-ray') ||
+      lower.includes('_cf_chl') ||
+      lower.includes('challenge-platform') ||
+      lower.includes('cf_clearance'))
+  ) return true;
+
+  // Google reCAPTCHA
+  if (lower.includes('recaptcha') || lower.includes('g-recaptcha') || lower.includes('google.com/recaptcha')) return true;
+
+  // hCaptcha
+  if (lower.includes('hcaptcha') || lower.includes('hcaptcha.com')) return true;
+
+  // Akamai / Bot Manager
+  if (lower.includes('akamai') && (lower.includes('bot manager') || lower.includes('web application firewall'))) return true;
+
+  // DataDome
+  if (lower.includes('datadome') || lower.includes('datadome.co')) return true;
+
+  // Imperva / Incapsula
+  if (
+    (lower.includes('imperva') || lower.includes('incapsula')) &&
+    (lower.includes('access denied') || lower.includes('incident id'))
+  ) return true;
+
+  // Kasada
+  if (lower.includes('kasada') || lower.includes('kasada.io')) return true;
+
+  // PerimeterX
+  if (lower.includes('perimeterx') || lower.includes('px-captcha')) return true;
+
+  // Generic CAPTCHA presence (last resort)
+  if ((lower.includes('captcha') && (lower.includes('solve') || lower.includes('complete') || lower.includes('challenge')))) return true;
+
+  return false;
+}
+
 function summarizeText(text) {
   return normalizeText(text).replace(/\s+/g, ' ').slice(0, 1200);
 }
@@ -2633,6 +2703,14 @@ async function handleCommand(command, args, req, payload) {
       // Trim page text to prevent exceeding LLM context limits
       const trimmedText = pageText.slice(0, 10000);
       
+      // Abort immediately if any captcha or bot-protection wall is detected
+      if (isBotProtectionBlock(trimmedText)) {
+        job.status = 'failed';
+        appendLog(`[Scraper ${jobId}] Aborted: Captcha/bot-protection wall detected at ${currentUrl}`);
+        activeScrapeJobs.delete(jobId);
+        return { nextAction: { type: 'finish', data: `Blocked: The site at ${currentUrl} is protected by a captcha or bot-protection system (Cloudflare, reCAPTCHA, hCaptcha, Akamai, etc.) and cannot be automatically scraped. Try rephrasing your search or asking about a different source.`, reason: 'bot-protection' } };
+      }
+
       const systemInstruction = `You are a dynamic web scraper agent. Your task is to achieve the user's scraping goal.
 You are interacting with a webpage inside an Android WebView.
 We will show you the current page URL, the extracted visible text, and the history of actions taken so far.
@@ -2648,7 +2726,8 @@ Available Actions:
 Guidelines:
 - Prefer CSS selectors that are standard (like ID, class, tag). Keep them simple.
 - If the goal is fully satisfied by the visible text, return the "finish" action with the extracted data immediately.
-- If you get stuck or see an error page, you can try another path or return "finish" with an error message.
+- If you get stuck or see an error page, return "finish" with a clear error message.
+- NEVER attempt to navigate to Cloudflare or captcha pages. If you see them, return "finish" immediately.
 - Output ONLY the JSON object. Do not wrap in markdown blocks, do not add other text. Just raw JSON.`;
 
       const promptText = `Scraping Goal: ${job.goal}
@@ -2693,6 +2772,89 @@ What is the next action?`;
       
       appendLog(`[Scraper ${jobId}] Decided action: ${JSON.stringify(nextAction)}`);
       return { nextAction };
+    }
+    case 'run_shell_command': {
+      const cmd = normalizeText(args.command || '');
+      if (!cmd) return { ok: false, error: 'No command provided' };
+      const timeoutMs = Math.min(Number(args.timeout || 30), 120) * 1000;
+      appendLog(`[Shell] Executing: ${cmd}`);
+      try {
+        const output = await Promise.race([
+          (async () => {
+            const { stdout, stderr } = await execFileAsync('sh', ['-c', cmd], {
+              cwd: DATA_DIR,
+              maxBuffer: 1024 * 1024 * 4,
+            }).catch(async (err) => {
+              return { stdout: '', stderr: err.message };
+            });
+            return { stdout: String(stdout || '').trim(), stderr: String(stderr || '').trim() };
+          })(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error(`Command timed out after ${timeoutMs / 1000}s`)), timeoutMs))
+        ]);
+        appendLog(`[Shell] Done: ${cmd}`);
+        return {
+          ok: true,
+          command: cmd,
+          stdout: output.stdout.slice(0, 8000),
+          stderr: output.stderr.slice(0, 2000),
+          output: (output.stdout + (output.stderr ? '\n[stderr]: ' + output.stderr : '')).trim().slice(0, 8000),
+        };
+      } catch (err) {
+        appendLog(`[Shell] Failed: ${cmd} — ${err.message}`);
+        return { ok: false, command: cmd, error: err.message };
+      }
+    }
+    case 'read_file': {
+      const filePath = normalizeText(args.path || '');
+      if (!filePath) return { ok: false, error: 'No path provided' };
+      const expanded = filePath.replace(/^~/, DATA_DIR);
+      try {
+        const content = fs.readFileSync(expanded, 'utf8');
+        const lines = content.split('\n');
+        const maxLines = Number(args.maxLines || 100);
+        const sliced = lines.slice(0, maxLines);
+        return {
+          ok: true,
+          path: filePath,
+          content: sliced.join('\n'),
+          totalLines: lines.length,
+          returnedLines: sliced.length,
+        };
+      } catch (err) {
+        return { ok: false, path: filePath, error: err.message };
+      }
+    }
+    case 'write_file': {
+      const filePath = normalizeText(args.path || '');
+      const content = String(args.content || '');
+      if (!filePath) return { ok: false, error: 'No path provided' };
+      const expanded = filePath.replace(/^~/, DATA_DIR);
+      try {
+        if (args.append) {
+          fs.appendFileSync(expanded, content, 'utf8');
+        } else {
+          fs.mkdirSync(path.dirname(expanded), { recursive: true });
+          fs.writeFileSync(expanded, content, 'utf8');
+        }
+        return { ok: true, path: filePath, bytes: Buffer.byteLength(content, 'utf8'), mode: args.append ? 'append' : 'write' };
+      } catch (err) {
+        return { ok: false, path: filePath, error: err.message };
+      }
+    }
+    case 'list_directory': {
+      const dirPath = normalizeText(args.path || '~');
+      const expanded = dirPath.replace(/^~/, DATA_DIR);
+      try {
+        const entries = fs.readdirSync(expanded, { withFileTypes: true });
+        const items = entries.map((e) => ({
+          name: e.name,
+          type: e.isDirectory() ? 'dir' : 'file',
+          size: e.isFile() ? (() => { try { return fs.statSync(path.join(expanded, e.name)).size; } catch { return 0; } })() : null,
+        }));
+        return { ok: true, path: dirPath, items, count: items.length };
+      } catch (err) {
+        return { ok: false, path: dirPath, error: err.message };
+      }
     }
     case 'run_js_script':
       return { result: await safeEval(normalizeText(args.code || ''), buildBridgeContext()) };

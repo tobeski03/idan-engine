@@ -1,0 +1,81 @@
+{
+  "id": "shell",
+  "name": "Termux Shell",
+  "version": "1.0.0",
+  "description": "Execute shell commands directly on the Termux Android environment. Use for file operations, package management, background tasks, system info, and anything requiring terminal access.",
+  "enabled": true,
+  "toolDeclarations": [
+    {
+      "name": "run_shell_command",
+      "description": "Run any shell command in the Termux environment and return the output. Use for file operations (ls, cat, cp, mv, rm), installing packages (pkg install), checking processes (ps, top), reading system info, running scripts, or any other terminal task. Supports pipes and multi-command chains with &&. Returns stdout and stderr.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "command": {
+            "type": "STRING",
+            "description": "The shell command to run, e.g. 'ls ~/storage/downloads', 'pkg install ffmpeg -y', 'cat /proc/meminfo | head -20', 'ps aux | grep node'"
+          },
+          "timeout": {
+            "type": "NUMBER",
+            "description": "Optional timeout in seconds. Default 30, max 120."
+          }
+        },
+        "required": ["command"]
+      }
+    },
+    {
+      "name": "read_file",
+      "description": "Read the text contents of a file from the Termux filesystem.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "path": {
+            "type": "STRING",
+            "description": "The absolute or relative path of the file to read, e.g. '~/idan-engine/engine.log' or '/data/data/com.termux/files/home/notes.txt'"
+          },
+          "maxLines": {
+            "type": "NUMBER",
+            "description": "Optional max number of lines to return. Default 100."
+          }
+        },
+        "required": ["path"]
+      }
+    },
+    {
+      "name": "write_file",
+      "description": "Write or overwrite a text file in the Termux filesystem.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "path": {
+            "type": "STRING",
+            "description": "The absolute or relative path of the file to write."
+          },
+          "content": {
+            "type": "STRING",
+            "description": "The text content to write to the file."
+          },
+          "append": {
+            "type": "BOOLEAN",
+            "description": "If true, append to the file instead of overwriting. Default false."
+          }
+        },
+        "required": ["path", "content"]
+      }
+    },
+    {
+      "name": "list_directory",
+      "description": "List the files and directories at a given path in the Termux filesystem.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {
+          "path": {
+            "type": "STRING",
+            "description": "The directory path to list, e.g. '~', '/sdcard/Download', '~/idan-engine'"
+          }
+        },
+        "required": ["path"]
+      }
+    }
+  ]
+}
