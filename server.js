@@ -68,6 +68,7 @@ const REMINDERS_FILE = path.join(DATA_DIR, 'reminders.json');
 const PLANS_FILE = path.join(DATA_DIR, 'plans.json');
 const CONNECTORS_FILE = path.join(DATA_DIR, 'connectors.json');
 const GOOGLE_AUTH_FILE = path.join(DATA_DIR, 'google-auth.json');
+const APP_AUTH_FILE = path.join(DATA_DIR, 'app-auth.json');
 const EMAIL_WATCH_FILE = path.join(DATA_DIR, 'email-watch.json');
 const CHATS_FILE = path.join(DATA_DIR, 'chats.json');
 const LOG_FILE = path.join(DATA_DIR, 'engine.log');
@@ -134,8 +135,15 @@ let googleAuth = readJsonFile(GOOGLE_AUTH_FILE, {
   expiryMs: 0,
   email: '',
   clientId: '',
+  clientSecret: '',
   apiBaseUrl: '',
   androidClientId: '',
+});
+let appAuth = readJsonFile(APP_AUTH_FILE, {
+  accessToken: '',
+  refreshToken: '',
+  expiryMs: 0,
+  email: '',
 });
 let emailWatchRules = readJsonFile(EMAIL_WATCH_FILE, []);
 let chats = readJsonFile(CHATS_FILE, { threads: {} });
@@ -379,6 +387,7 @@ function saveAll() {
   writeJsonFile(PLANS_FILE, plans);
   writeJsonFile(CONNECTORS_FILE, connectors);
   writeJsonFile(GOOGLE_AUTH_FILE, googleAuth);
+  writeJsonFile(APP_AUTH_FILE, appAuth);
   writeJsonFile(EMAIL_WATCH_FILE, emailWatchRules);
   writeJsonFile(CHATS_FILE, chats);
 }
@@ -584,26 +593,36 @@ function listConnectors(type) {
 }
 
 function normalizeGoogleAuthState(next = {}) {
-  const expiryMs = Number(next.expiryMs || 0);
+  const expiryMs = next.expiryMs !== undefined ? Number(next.expiryMs || 0) : googleAuth.expiryMs;
   return {
-    accessToken: normalizeText(next.accessToken || ''),
-    refreshToken: normalizeText(next.refreshToken || ''),
+    accessToken: next.accessToken !== undefined ? normalizeText(next.accessToken) : googleAuth.accessToken,
+    refreshToken: (next.refreshToken !== undefined && next.refreshToken !== '') ? normalizeText(next.refreshToken) : googleAuth.refreshToken,
     expiryMs: Number.isFinite(expiryMs) && expiryMs > 0 ? expiryMs : 0,
-    email: normalizeText(next.email || '').toLowerCase(),
-    clientId: normalizeText(next.clientId || ''),
-    apiBaseUrl: normalizeText(next.apiBaseUrl || ''),
-    androidClientId: normalizeText(next.androidClientId || ''),
+    email: next.email !== undefined ? normalizeText(next.email).toLowerCase() : googleAuth.email,
+    clientId: next.clientId !== undefined ? normalizeText(next.clientId) : googleAuth.clientId,
+    clientSecret: next.clientSecret !== undefined ? normalizeText(next.clientSecret) : googleAuth.clientSecret,
+    apiBaseUrl: next.apiBaseUrl !== undefined ? normalizeText(next.apiBaseUrl) : googleAuth.apiBaseUrl,
+    androidClientId: next.androidClientId !== undefined ? normalizeText(next.androidClientId) : googleAuth.androidClientId,
   };
 }
 
 function saveGoogleAuthState(next = {}) {
-  googleAuth = normalizeGoogleAuthState({ ...googleAuth, ...next });
+  googleAuth = normalizeGoogleAuthState(next);
   saveAll();
   return googleAuth;
 }
 
 function clearGoogleAuthState() {
-  googleAuth = normalizeGoogleAuthState();
+  googleAuth = {
+    accessToken: '',
+    refreshToken: '',
+    expiryMs: 0,
+    email: '',
+    clientId: '',
+    clientSecret: '',
+    apiBaseUrl: '',
+    androidClientId: '',
+  };
   saveAll();
   return googleAuth;
 }
@@ -620,6 +639,7 @@ function getGoogleAuthStatus() {
     expiresInMs: typeof expiresInMs === 'number' ? expiresInMs : null,
     apiBaseUrl: googleAuth.apiBaseUrl || '',
     clientId: googleAuth.clientId || googleAuth.androidClientId || '',
+    hasClientSecret: Boolean(googleAuth.clientSecret),
   };
 }
 
@@ -647,6 +667,10 @@ async function refreshGoogleAccessToken() {
     refresh_token: refreshToken,
     grant_type: 'refresh_token',
   });
+
+  if (googleAuth.clientSecret) {
+    params.set('client_secret', googleAuth.clientSecret);
+  }
 
   const response = await fetch('https://oauth2.googleapis.com/token', {
     method: 'POST',
@@ -683,6 +707,92 @@ async function ensureGoogleAccessToken() {
   if (token) return token;
 
   throw new Error('Google is not connected. Save Google auth state first.');
+}
+
+function normalizeAppAuthState(next = {}) {
+  const expiryMs = next.expiryMs !== undefined ? Number(next.expiryMs || 0) : appAuth.expiryMs;
+  return {
+    accessToken: next.accessToken !== undefined ? normalizeText(next.accessToken) : appAuth.accessToken,
+    refreshToken: (next.refreshToken !== undefined && next.refreshToken !== '') ? normalizeText(next.refreshToken) : appAuth.refreshToken,
+    expiryMs: Number.isFinite(expiryMs) && expiryMs > 0 ? expiryMs : 0,
+    email: next.email !== undefined ? normalizeText(next.email).toLowerCase() : appAuth.email,
+  };
+}
+
+function saveAppAuthState(next = {}) {
+  appAuth = normalizeAppAuthState(next);
+  saveAll();
+  return appAuth;
+}
+
+function clearAppAuthState() {
+  appAuth = {
+    accessToken: '',
+    refreshToken: '',
+    expiryMs: 0,
+    email: '',
+  };
+  saveAll();
+  return appAuth;
+}
+
+function getAppAuthStatus() {
+  const expiryMs = Number(appAuth.expiryMs || 0);
+  const expiresInMs = expiryMs > 0 ? expiryMs - Date.now() : null;
+  return {
+    connected: Boolean(appAuth.accessToken || appAuth.refreshToken),
+    email: appAuth.email || '',
+    hasAccessToken: Boolean(appAuth.accessToken),
+    hasRefreshToken: Boolean(appAuth.refreshToken),
+    expiryMs: expiryMs > 0 ? expiryMs : 0,
+    expiresInMs: typeof expiresInMs === 'number' ? expiresInMs : null,
+  };
+}
+
+async function refreshAppAccessToken() {
+  const refreshToken = normalizeText(appAuth.refreshToken);
+  if (!refreshToken) return null;
+
+  const apiBaseUrl = getBackendApiBaseUrl();
+  if (!apiBaseUrl) {
+    throw new Error('Google refresh failed: Backend URL is not configured.');
+  }
+
+  const response = await fetch(`${apiBaseUrl}/api/auth/google/refresh`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ refreshToken }),
+  });
+  
+  const json = await response.json().catch(() => ({}));
+  if (!response.ok || !json.access_token) {
+    throw new Error(json?.error || `Google App refresh failed ${response.status}`);
+  }
+
+  const expiryMs = Number.isFinite(Number(json.expires_in)) && Number(json.expires_in) > 0
+    ? Date.now() + Number(json.expires_in) * 1000
+    : Date.now() + 3600 * 1000;
+
+  saveAppAuthState({
+    accessToken: String(json.access_token),
+    expiryMs,
+  });
+
+  return String(json.access_token);
+}
+
+async function ensureAppAccessToken() {
+  const expiryMs = Number(appAuth.expiryMs || 0);
+  const token = normalizeText(appAuth.accessToken);
+  if (token && (!expiryMs || Date.now() < expiryMs - 60_000)) {
+    return token;
+  }
+
+  const refreshed = await refreshAppAccessToken();
+  if (refreshed) return refreshed;
+  if (token) return token;
+
+  throw new Error('App is not logged in. Please sign in with Google first.');
 }
 
 async function googleApiFetch(apiBaseUrl, pathSuffix, options = {}) {
@@ -781,7 +891,7 @@ async function generateGeminiReply(thread) {
     throw new Error('Engine config not received yet. The Android app must complete pairing before chat is available.');
   }
 
-  const googleAccessToken = await ensureGoogleAccessToken();
+  const googleAccessToken = await ensureAppAccessToken();
   const history = Array.isArray(thread?.messages)
     ? thread.messages.slice(-30).filter((m) => m.role === 'user' || m.role === 'assistant' || m.role === 'function')
     : [];
@@ -2432,7 +2542,7 @@ async function handleCommand(command, args, req, payload) {
       saveGoogleAuthState(args);
       upsertConnector('gmail', {
         id: 'google-auth',
-        label: `Google ${googleAuth.email || 'account'}`,
+        label: `Google Workspace (${googleAuth.email || 'account'})`,
         status: getGoogleAuthStatus().connected ? 'connected' : 'configured',
         config: {
           ...getGoogleAuthStatus(),
@@ -2443,7 +2553,40 @@ async function handleCommand(command, args, req, payload) {
       return { auth: getGoogleAuthStatus() };
     case 'clear_google_auth_state':
       clearGoogleAuthState();
+      removeConnector('google-auth');
       return { cleared: true, auth: getGoogleAuthStatus() };
+    case 'set_app_auth_state':
+      saveAppAuthState(args);
+      return { auth: getAppAuthStatus() };
+    case 'get_app_auth_state':
+      return { auth: getAppAuthStatus() };
+    case 'clear_app_auth_state':
+      clearAppAuthState();
+      return { cleared: true, auth: getAppAuthStatus() };
+    case 'get_local_google_auth_url': {
+      const clientId = normalizeText(args.clientId || googleAuth.clientId || '');
+      if (!clientId) throw new Error('Google Client ID is missing.');
+      const scopes = [
+        'https://www.googleapis.com/auth/gmail.modify',
+        'https://www.googleapis.com/auth/documents',
+        'https://www.googleapis.com/auth/spreadsheets',
+        'https://www.googleapis.com/auth/forms.body',
+        'https://www.googleapis.com/auth/forms.responses',
+        'https://www.googleapis.com/auth/userinfo.email'
+      ].join(' ');
+      
+      const redirectUri = `http://localhost:${PORT}/auth/google/callback`;
+      const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` + new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: redirectUri,
+        response_type: 'code',
+        scope: scopes,
+        access_type: 'offline',
+        prompt: 'consent'
+      }).toString();
+      
+      return { url: authUrl };
+    }
     case 'google_docs_open':
     case 'google_docs_create':
     case 'create_google_doc': {
@@ -2764,6 +2907,125 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === 'GET' && req.url === '/status') {
       return json(res, 200, snapshot());
+    }
+
+    if (req.method === 'GET' && req.url.startsWith('/auth/google/callback')) {
+      const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+      const code = parsedUrl.searchParams.get('code');
+      const error = parsedUrl.searchParams.get('error');
+
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+
+      if (error) {
+        res.end(`
+          <html>
+            <body style="font-family: sans-serif; background-color: #121212; color: #ffffff; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0;">
+              <div style="background-color: #1e1e1e; padding: 40px; border-radius: 12px; border: 1px solid #ff3b30; text-align: center; max-width: 400px; box-shadow: 0 4px 12px rgba(0,0,0,0.5);">
+                <h1 style="color: #ff3b30; margin-top: 0;">Connection Failed</h1>
+                <p style="font-size: 16px; color: #bbbbbb; line-height: 1.5;">Google OAuth error: ${error}</p>
+                <p style="font-size: 14px; color: #888888;">You can close this tab and try again.</p>
+              </div>
+            </body>
+          </html>
+        `);
+        return;
+      }
+
+      if (!code) {
+        res.end(`
+          <html>
+            <body style="font-family: sans-serif; background-color: #121212; color: #ffffff; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0;">
+              <div style="background-color: #1e1e1e; padding: 40px; border-radius: 12px; border: 1px solid #ff9500; text-align: center; max-width: 400px; box-shadow: 0 4px 12px rgba(0,0,0,0.5);">
+                <h1 style="color: #ff9500; margin-top: 0;">Missing Code</h1>
+                <p style="font-size: 16px; color: #bbbbbb; line-height: 1.5;">No authorization code was returned from Google.</p>
+              </div>
+            </body>
+          </html>
+        `);
+        return;
+      }
+
+      try {
+        const clientId = googleAuth.clientId;
+        const clientSecret = googleAuth.clientSecret;
+        if (!clientId || !clientSecret) {
+          throw new Error('Local Google Client ID or Client Secret is not set in the engine.');
+        }
+
+        const redirectUri = `http://localhost:${PORT}/auth/google/callback`;
+        const params = new URLSearchParams({
+          code,
+          client_id: clientId,
+          client_secret: clientSecret,
+          redirect_uri: redirectUri,
+          grant_type: 'authorization_code'
+        });
+
+        const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: params.toString()
+        });
+
+        const tokenData = await tokenRes.json();
+        if (!tokenRes.ok || !tokenData.access_token) {
+          throw new Error(tokenData.error_description || tokenData.error || `Token exchange failed: ${tokenRes.status}`);
+        }
+
+        // Fetch user email
+        const userInfoRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+          headers: { Authorization: `Bearer ${tokenData.access_token}` }
+        });
+        const userInfo = await userInfoRes.json();
+        const email = userInfo.email || 'unknown';
+
+        const expiryMs = Number.isFinite(Number(tokenData.expires_in)) && Number(tokenData.expires_in) > 0
+          ? Date.now() + Number(tokenData.expires_in) * 1000
+          : Date.now() + 3600 * 1000;
+
+        saveGoogleAuthState({
+          accessToken: String(tokenData.access_token),
+          refreshToken: String(tokenData.refresh_token || googleAuth.refreshToken),
+          expiryMs,
+          email
+        });
+
+        // Update Workspace connectors
+        upsertConnector('gmail', {
+          id: 'google-auth',
+          label: `Google Workspace (${email})`,
+          status: 'connected',
+          config: {
+            ...getGoogleAuthStatus(),
+          },
+        });
+
+        res.end(`
+          <html>
+            <body style="font-family: sans-serif; background-color: #121212; color: #ffffff; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0;">
+              <div style="background-color: #1e1e1e; padding: 40px; border-radius: 12px; border: 1px solid #333333; text-align: center; max-width: 400px; box-shadow: 0 4px 12px rgba(0,0,0,0.5);">
+                <h1 style="color: #00e676; margin-top: 0;">Connected!</h1>
+                <p style="font-size: 16px; color: #bbbbbb; line-height: 1.5;">Your Google Workspace account (<b>${email}</b>) has been successfully connected to Idan AI locally.</p>
+                <p style="font-size: 14px; color: #888888;">You can now close this tab and return to the application.</p>
+              </div>
+            </body>
+          </html>
+        `);
+      } catch (e) {
+        appendLog(`local oauth callback error: ${e.message}`);
+        res.end(`
+          <html>
+            <body style="font-family: sans-serif; background-color: #121212; color: #ffffff; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0;">
+              <div style="background-color: #1e1e1e; padding: 40px; border-radius: 12px; border: 1px solid #ff3b30; text-align: center; max-width: 400px; box-shadow: 0 4px 12px rgba(0,0,0,0.5);">
+                <h1 style="color: #ff3b30; margin-top: 0;">Connection Failed</h1>
+                <p style="font-size: 16px; color: #bbbbbb; line-height: 1.5;">Error exchanging token: ${e.message}</p>
+                <p style="font-size: 14px; color: #888888;">Please check your credentials and try again.</p>
+              </div>
+            </body>
+          </html>
+        `);
+      }
+      return;
     }
 
     if (req.method === 'POST' && req.url === '/rpc') {
