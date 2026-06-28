@@ -75,6 +75,7 @@ const LOG_FILE = path.join(DATA_DIR, 'engine.log');
 
 const startedAt = Date.now();
 const jobs = new Map();
+const activeScrapeJobs = new Map();
 const recurringTimers = new Map();
 const CONNECTOR_LABELS = {
   gmail: 'Gmail',
@@ -967,6 +968,42 @@ async function generateGeminiReply(thread) {
     functionCalls,
     raw: json,
   };
+}
+
+async function generateScraperGeminiReply(systemInstruction, promptText) {
+  const apiBaseUrl = getBackendApiBaseUrl();
+  if (!apiBaseUrl) {
+    throw new Error('Engine config not received yet. The Android app must complete pairing before chat is available.');
+  }
+
+  const googleAccessToken = await ensureAppAccessToken();
+  const contents = [
+    {
+      role: 'user',
+      parts: [{ text: promptText }]
+    }
+  ];
+
+  const response = await fetch(`${apiBaseUrl}/api/gemini/generate`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      model: engineConfig.geminiModel || 'gemini-2.5-flash',
+      systemInstruction,
+      contents,
+      googleAccessToken,
+    }),
+  });
+
+  const json = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(json?.error?.message || json?.error || `Gemini backend error ${response.status}`);
+  }
+
+  const text = normalizeText(json.text || '');
+  return { text, raw: json };
 }
 
 function utf8ToBase64Url(value) {
@@ -2515,12 +2552,116 @@ async function handleCommand(command, args, req, payload) {
           cleanPageText(await visitWebsite(normalizeText(args.url || args.query || 'https://example.com')))
         ),
       };
-    case 'agentic_dynamic_scrape':
+    case 'agentic_dynamic_scrape': {
+      const jobId = 'scrape_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+      const url = normalizeText(args.url || args.query || 'https://example.com');
+      const goal = normalizeText(args.goal || 'Scrape the page content');
+      
+      activeScrapeJobs.set(jobId, {
+        jobId,
+        url,
+        goal,
+        outputSchema: args.outputSchema || null,
+        maxSteps: Number(args.maxSteps) || 12,
+        currentStep: 0,
+        history: [],
+        status: 'started',
+        createdAt: Date.now()
+      });
+      
+      appendLog(`[Scraper] Initialized job ${jobId} for URL ${url} with goal: "${goal}"`);
+      
       return {
-        text: summarizeText(
-          cleanPageText(await visitWebsite(normalizeText(args.url || args.query || 'https://example.com')))
-        ),
+        action: 'webview-scrape-start',
+        jobId,
+        url,
+        goal,
+        status: 'scraping_started',
+        message: `Starting a dynamic scrape for ${url} to find "${goal}". I will update you once it's complete.`
       };
+    }
+    case 'report_scrape_step': {
+      const jobId = normalizeText(args.jobId);
+      const pageText = normalizeText(args.pageText || '');
+      const currentUrl = normalizeText(args.currentUrl || '');
+      
+      const job = activeScrapeJobs.get(jobId);
+      if (!job) {
+        appendLog(`[Scraper] report_scrape_step error: Job ${jobId} not found`);
+        return { error: 'Job not found' };
+      }
+      
+      job.currentStep += 1;
+      if (job.currentStep > job.maxSteps) {
+        job.status = 'failed';
+        appendLog(`[Scraper ${jobId}] Failed: Exceeded max steps`);
+        return { nextAction: { type: 'finish', data: 'Failed: exceeded maximum navigation steps' } };
+      }
+      
+      // Trim page text to prevent exceeding LLM context limits
+      const trimmedText = pageText.slice(0, 10000);
+      
+      const systemInstruction = `You are a dynamic web scraper agent. Your task is to achieve the user's scraping goal.
+You are interacting with a webpage inside an Android WebView.
+We will show you the current page URL, the extracted visible text, and the history of actions taken so far.
+Based on this, you must choose the next logical browser action to get closer to the goal.
+
+Available Actions:
+1. {"type": "click", "selector": "CSS_SELECTOR", "reason": "Brief reason"}
+2. {"type": "type", "selector": "CSS_SELECTOR", "text": "text to type", "reason": "Brief reason"}
+3. {"type": "scroll", "direction": "down"|"up", "reason": "Brief reason"}
+4. {"type": "wait", "durationMs": 3000, "reason": "Brief reason"}
+5. {"type": "finish", "data": "The final extracted data answering the scraping goal", "reason": "Brief reason"}
+
+Guidelines:
+- Prefer CSS selectors that are standard (like ID, class, tag). Keep them simple.
+- If the goal is fully satisfied by the visible text, return the "finish" action with the extracted data immediately.
+- If you get stuck or see an error page, you can try another path or return "finish" with an error message.
+- Output ONLY the JSON object. Do not wrap in markdown blocks, do not add other text. Just raw JSON.`;
+
+      const promptText = `Scraping Goal: ${job.goal}
+Current URL: ${currentUrl}
+Step: ${job.currentStep}/${job.maxSteps}
+
+Previous Steps History:
+${job.history.map((h, i) => `Step ${i+1}: Action: ${JSON.stringify(h.action)} -> Result: ${h.result}`).join('\n') || 'None'}
+
+Current Visible Page Text:
+"""
+${trimmedText}
+"""
+
+What is the next action?`;
+
+      appendLog(`[Scraper ${jobId}] Step ${job.currentStep}: Prompting Gemini for next action...`);
+      
+      let nextAction;
+      try {
+        const result = await generateScraperGeminiReply(systemInstruction, promptText);
+        // Parse the JSON action
+        const cleanedText = result.text.replace(/```json/g, '').replace(/```/g, '').trim();
+        nextAction = JSON.parse(cleanedText);
+      } catch (err) {
+        appendLog(`[Scraper ${jobId}] Failed to get action from Gemini: ${err.message}`);
+        nextAction = { type: 'finish', data: 'Error planning next action: ' + err.message };
+      }
+      
+      // Update history
+      job.history.push({
+        action: nextAction,
+        result: nextAction.type === 'finish' ? 'Finished' : 'Executed ' + nextAction.type
+      });
+      
+      if (nextAction.type === 'finish') {
+        job.status = 'completed';
+        job.result = nextAction.data;
+      } else {
+        job.status = 'executing';
+      }
+      
+      appendLog(`[Scraper ${jobId}] Decided action: ${JSON.stringify(nextAction)}`);
+      return { nextAction };
+    }
     case 'run_js_script':
       return { result: await safeEval(normalizeText(args.code || ''), buildBridgeContext()) };
     case 'app_navigator':
