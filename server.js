@@ -93,7 +93,8 @@ Key Guidelines:
 3. Handle Failures: If a function response indicates a failure (e.g., contains 'error', 'ok: false', 'status: "failed"', or empty/error outputs), you must explain the error clearly to the user, suggest possible solutions, and offer to try again if applicable. Never claim you performed an action if the tool execution returned an error.
 4. Separate Google Services:
    - Google App Login is used ONLY for your chat authorization.
-   - Google Workspace Integration is used to run Gmail, Sheets, Docs, and Forms locally using local credentials. Do not confuse the two.`;
+   - Google Workspace Integration is used to run Gmail, Sheets, Docs, and Forms locally using local credentials. Do not confuse the two.
+5. Search Fallback: If the user asks about real-time information, current events, facts you are unsure of, or if you do not know the answer, you MUST use the 'google_search' tool to search the web immediately. Never say you do not know or do not have access to real-time information without first running a search.`;
 
 function readJsonFile(file, fallback) {
   try {
@@ -2543,8 +2544,39 @@ async function handleCommand(command, args, req, payload) {
       return { tasks: recurringTasks };
     case 'cancel_recurring_task':
       return { removed: cancelRecurringTask(normalizeText(args.taskId)) };
-    case 'google_search':
-      return { summary: await handleSearch(args.query || '') };
+    case 'google_search': {
+      const query = args.query || '';
+      const summary = await handleSearch(query);
+      if (summary.startsWith('Search failed') || summary.includes('No clear search results')) {
+        const jobId = 'scrape_search_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+        const searchUrl = `https://duckduckgo.com/?q=${encodeURIComponent(query)}`;
+        const goal = `Find the answer for query: "${query}" from the search results.`;
+        
+        activeScrapeJobs.set(jobId, {
+          jobId,
+          url: searchUrl,
+          goal,
+          outputSchema: null,
+          maxSteps: 8,
+          currentStep: 0,
+          history: [],
+          status: 'started',
+          createdAt: Date.now()
+        });
+        
+        appendLog(`[Scraper] Static search failed. Initialized search scrape job ${jobId} for URL ${searchUrl}`);
+        
+        return {
+          action: 'webview-scrape-start',
+          jobId,
+          url: searchUrl,
+          goal,
+          status: 'scraping_started',
+          message: `Static search failed due to blocks/captchas. Launching dynamic webview search for "${query}"...`
+        };
+      }
+      return { summary };
+    }
     case 'visit_website':
     case 'scrape_url':
       return {
