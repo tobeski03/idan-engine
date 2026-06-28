@@ -83,7 +83,16 @@ const CONNECTOR_LABELS = {
   'google-forms': 'Google Forms',
   'mail-watch': 'Mail watch',
 };
-const CHAT_SYSTEM_PROMPT = 'You are Idan, a friendly Gemini-powered Android assistant. Keep replies concise, useful, and natural. Use the conversation history as context.';
+const CHAT_SYSTEM_PROMPT = `You are Idan, a powerful, friendly Gemini-powered Android assistant running locally on the user's device via Termux.
+Keep replies concise, useful, and natural. Use the conversation history as context.
+
+Key Guidelines:
+1. Tool Calling: You have access to local device and Google Workspace skills via function calls.
+2. Inspect Tool Responses: You MUST carefully inspect the result of every function call. Do not assume success.
+3. Handle Failures: If a function response indicates a failure (e.g., contains 'error', 'ok: false', 'status: "failed"', or empty/error outputs), you must explain the error clearly to the user, suggest possible solutions, and offer to try again if applicable. Never claim you performed an action if the tool execution returned an error.
+4. Separate Google Services:
+   - Google App Login is used ONLY for your chat authorization.
+   - Google Workspace Integration is used to run Gmail, Sheets, Docs, and Forms locally using local credentials. Do not confuse the two.`;
 
 function readJsonFile(file, fallback) {
   try {
@@ -814,10 +823,14 @@ async function googleApiFetch(apiBaseUrl, pathSuffix, options = {}) {
 }
 
 function chatContentFromMessage(message) {
-  // Gemini only accepts 'user' or 'model' roles.
-  // Function responses must be sent as role='user' with functionResponse parts.
+  let role = 'user';
+  if (message.role === 'assistant') {
+    role = 'model';
+  } else if (message.role === 'function') {
+    role = 'function';
+  }
   return {
-    role: message.role === 'assistant' ? 'model' : 'user',
+    role,
     parts: message.parts || [{ text: normalizeText(message.content) }],
   };
 }
@@ -842,7 +855,7 @@ function sanitizeContentsForGemini(contents) {
 
   // Pass 1: remove orphaned trailing functionCall turns
   // Walk backwards; if the last model turn has functionCall parts but is not
-  // immediately followed by a user turn with functionResponse parts, remove it.
+  // immediately followed by a turn with functionResponse parts, remove it.
   let changed = true;
   while (changed) {
     changed = false;
@@ -851,7 +864,7 @@ function sanitizeContentsForGemini(contents) {
       const hasFunctionCall = Array.isArray(turn.parts) && turn.parts.some((p) => p.functionCall);
       if (turn.role === 'model' && hasFunctionCall) {
         const nextTurn = result[i + 1];
-        const nextHasResponse = nextTurn && nextTurn.role === 'user' &&
+        const nextHasResponse = nextTurn && nextTurn.role === 'function' &&
           Array.isArray(nextTurn.parts) && nextTurn.parts.some((p) => p.functionResponse);
         if (!nextHasResponse) {
           // Orphaned functionCall — remove it and the user message that preceded it
@@ -901,6 +914,17 @@ async function generateGeminiReply(thread) {
   const declarations = getAllToolDeclarations();
   const toolsPayload = declarations.length > 0 ? [{ functionDeclarations: declarations }] : undefined;
 
+  const appStatus = getAppAuthStatus();
+  const workspaceStatus = getGoogleAuthStatus();
+  const connectorsList = connectors ? connectors.map(c => `• [${c.id}] ${c.label} (Status: ${c.status})`).join('\n') : 'None';
+  
+  const statusPrompt = `\n\n[System Environment Status]
+- Current Local Time: ${new Date().toString()}
+- Current Date: ${new Date().toISOString().split('T')[0]}
+- Google App Login: ${appStatus.connected ? `Logged In as ${appStatus.email}` : 'Not Logged In'}
+- Google Workspace Integration: ${workspaceStatus.connected ? `Connected as ${workspaceStatus.email}` : 'Not Connected'}
+- Active Engine Connectors:\n${connectorsList}`;
+
   const response = await fetch(`${apiBaseUrl}/api/gemini/generate`, {
     method: 'POST',
     headers: {
@@ -908,7 +932,7 @@ async function generateGeminiReply(thread) {
     },
     body: JSON.stringify({
       model: engineConfig.geminiModel,
-      systemInstruction: `${CHAT_SYSTEM_PROMPT}\n\nCurrent local time: ${new Date().toString()}.\nCurrent date: ${new Date().toISOString().split('T')[0]}.\nUse this to calculate relative times (like 'in 5 minutes' or 'tomorrow morning') accurately.`,
+      systemInstruction: `${CHAT_SYSTEM_PROMPT}${statusPrompt}`,
       contents,
       tools: toolsPayload,
       googleAccessToken,
