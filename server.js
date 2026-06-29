@@ -84,18 +84,31 @@ const CONNECTOR_LABELS = {
   'google-forms': 'Google Forms',
   'mail-watch': 'Mail watch',
 };
-const CHAT_SYSTEM_PROMPT = `You are Idan, a powerful, friendly Gemini-powered Android assistant running locally on the user's device via Termux.
-Keep replies concise, useful, and natural. Use the conversation history as context.
+const CHAT_SYSTEM_PROMPT = `You are Idan, an extremely powerful, relentless, and friendly Gemini-powered Android agent running locally on the user's device via Termux.
+You represent the absolute pinnacle of agentic AI. Your philosophy is simple: NOTHING is impossible, and you NEVER give up. You must never say "I don't know", "I can't find it", "it is impossible", or "I don't have access". If a task or search query is challenging, you will try multiple strategies, write custom code, and use every tool at your disposal to solve it.
 
 Key Guidelines:
-1. Tool Calling: You have access to local device and Google Workspace skills via function calls.
-2. Inspect Tool Responses: You MUST carefully inspect the result of every function call. Do not assume success.
-3. Handle Failures: If a function response indicates a failure (e.g., contains 'error', 'ok: false', 'status: "failed"', or empty/error outputs), you must explain the error clearly to the user, suggest possible solutions, and offer to try again if applicable. Never claim you performed an action if the tool execution returned an error.
+1. Agentic Search & Relentlessness:
+   - If the user asks for real-time information, facts, current events, or calculations, you MUST run a search.
+   - If 'google_search' returns a list of links (URLs), DO NOT just output the list and stop. You MUST proactively read the actual content of the most relevant page(s) by calling 'visit_website' or 'scrape_url'.
+   - If a website visit fails or is blocked (e.g. CAPTCHAs, bot protection, Cloudflare, empty pages), do not give up. Proactively trigger 'agentic_dynamic_scrape' to navigate it dynamically, or perform another search using a different query, or visit a different result URL.
+   - If the search tools cannot find the information directly, try executing custom code in Termux (e.g., using curl, wget, or python/javascript to query open APIs).
+   - If the user asks a question that requires math, data parsing, or text analysis, write a script to calculate/parse it and execute it.
+2. Tool Execution & Multi-turn Loops:
+   - You can call multiple tools in series (up to 5 loops per user response). Leverage this! Run a search, inspect the links, visit the best link, run a shell command if needed, and only present the final, fully-formed answer to the user once you have it.
+   - ALWAYS inspect the output of function calls. If a tool returns an error, do not explain the failure and stop; instead, debug the issue, try a corrected argument, run a fallback command, or try a different approach.
+3. Termux Shell Access ('run_shell_command'):
+   - You have direct root/user shell access to the Termux Linux environment. Proactively use it for:
+     * File operations (list directories, view files, write scripts, grep text).
+     * System checks (storage, memory, battery, packages).
+     * API integration (using curl/wget to fetch JSON from open APIs like weather, finance, crypto, news).
+     * Writing and running custom Python or Node.js scripts to automate tasks, parse complex data, or scrape pages.
+   - Always run commands with clean flags (e.g. -y for installations, silent flags for curl) and keep commands non-interactive.
 4. Separate Google Services:
    - Google App Login is used ONLY for your chat authorization.
    - Google Workspace Integration is used to run Gmail, Sheets, Docs, and Forms locally using local credentials. Do not confuse the two.
-5. Search Fallback: If the user asks about real-time information, current events, facts you are unsure of, or if you do not know the answer, you MUST use the 'google_search' tool to search the web immediately. Never say you do not know or do not have access to real-time information without first running a search.
-6. Termux Shell Access: You have direct shell access to the Termux Linux environment on the user's Android device via 'run_shell_command'. Use it proactively for tasks like file management, checking installed packages, reading logs, running scripts, checking storage/memory, downloading files with curl/wget, managing cron jobs, or any task that benefits from a terminal. Also use 'read_file', 'write_file', and 'list_directory' for filesystem work. Always show the relevant output to the user.`;
+5. Tone & Personality:
+   - Sound premium, capable, intelligent, and highly competent. Use formatting (bolding, lists, markdown tables) to display data beautifully. Do not output raw JSON outputs to the user; parse and explain them.`;
 
 function readJsonFile(file, fallback) {
   try {
@@ -854,51 +867,68 @@ function chatContentFromMessage(message) {
 function sanitizeContentsForGemini(contents) {
   if (!Array.isArray(contents) || contents.length === 0) return contents;
 
-  let result = [...contents];
+  const sanitized = [];
 
-  // Pass 1: remove orphaned trailing functionCall turns
-  // Walk backwards; if the last model turn has functionCall parts but is not
-  // immediately followed by a turn with functionResponse parts, remove it.
-  let changed = true;
-  while (changed) {
-    changed = false;
-    for (let i = result.length - 1; i >= 0; i--) {
-      const turn = result[i];
-      const hasFunctionCall = Array.isArray(turn.parts) && turn.parts.some((p) => p.functionCall);
-      if (turn.role === 'model' && hasFunctionCall) {
-        const nextTurn = result[i + 1];
-        const nextHasResponse = nextTurn && nextTurn.role === 'function' &&
-          Array.isArray(nextTurn.parts) && nextTurn.parts.some((p) => p.functionResponse);
-        if (!nextHasResponse) {
-          // Orphaned functionCall — remove it and the user message that preceded it
-          // (so we don't end up with model following model)
-          result.splice(i, 1);
-          changed = true;
-          break;
+  for (let i = 0; i < contents.length; i++) {
+    const turn = contents[i];
+    if (!turn || !Array.isArray(turn.parts) || turn.parts.length === 0) {
+      continue;
+    }
+
+    const isModel = turn.role === 'model';
+    const isFunction = turn.role === 'function';
+    const isUser = turn.role === 'user';
+
+    if (isUser) {
+      const last = sanitized[sanitized.length - 1];
+      if (last && last.role === 'user') {
+        last.parts.push(...turn.parts);
+      } else {
+        if (last && last.role === 'model' && last.parts.some(p => p.functionCall)) {
+          // Preceding turn was model functionCall but next is user — not valid in Gemini API!
+          // We convert it to a text model turn by stripping function calls to keep history valid.
+          last.parts = last.parts.filter(p => !p.functionCall);
+          if (last.parts.length === 0) {
+            last.parts = [{ text: 'Tool execution skipped.' }];
+          }
         }
+        sanitized.push({ role: 'user', parts: JSON.parse(JSON.stringify(turn.parts)) });
+      }
+    } else if (isModel) {
+      const last = sanitized[sanitized.length - 1];
+      if (!last || last.role === 'model') {
+        // Can't start with model turn, and can't have consecutive model turns.
+        continue;
+      }
+      sanitized.push({ role: 'model', parts: JSON.parse(JSON.stringify(turn.parts)) });
+    } else if (isFunction) {
+      const last = sanitized[sanitized.length - 1];
+      if (last && last.role === 'model' && last.parts.some(p => p.functionCall)) {
+        sanitized.push({ role: 'function', parts: JSON.parse(JSON.stringify(turn.parts)) });
+      } else {
+        // Orphaned function response without preceding functionCall turn — skip.
+        continue;
       }
     }
   }
 
-  // Pass 2: remove consecutive model turns
-  changed = true;
-  while (changed) {
-    changed = false;
-    for (let i = 0; i < result.length - 1; i++) {
-      if (result[i].role === 'model' && result[i + 1].role === 'model') {
-        result.splice(i + 1, 1);
-        changed = true;
-        break;
+  // Ensure history does not end with an incomplete model functionCall turn (which lacks response).
+  if (sanitized.length > 0) {
+    const last = sanitized[sanitized.length - 1];
+    if (last.role === 'model' && last.parts.some(p => p.functionCall)) {
+      last.parts = last.parts.filter(p => !p.functionCall);
+      if (last.parts.length === 0) {
+        last.parts = [{ text: 'Tool execution skipped.' }];
       }
     }
   }
 
-  // Pass 3: history must not start with a model turn
-  while (result.length > 0 && result[0].role === 'model') {
-    result.shift();
+  // Ensure history strictly starts with a user turn.
+  while (sanitized.length > 0 && sanitized[0].role !== 'user') {
+    sanitized.shift();
   }
 
-  return result;
+  return sanitized;
 }
 
 async function generateGeminiReply(thread) {
@@ -2616,14 +2646,37 @@ async function handleCommand(command, args, req, payload) {
       return { removed: cancelRecurringTask(normalizeText(args.taskId)) };
     case 'google_search': {
       const query = args.query || '';
-      const summary = await handleSearch(query);
-      if (summary.startsWith('Search failed') || summary.includes('No clear search results')) {
+      const preferDynamic = !!args.preferDynamic || 
+                            /dynamic/i.test(query) || 
+                            /deep/i.test(query) || 
+                            /scrape/i.test(query) || 
+                            /webview/i.test(query);
+
+      let summary = '';
+      if (!preferDynamic) {
+        try {
+          summary = await handleSearch(query);
+        } catch (e) {
+          summary = `Search failed: ${e.message}`;
+        }
+      }
+
+      const isFailedOrBlocked = !summary ||
+        preferDynamic ||
+        summary.startsWith('Search failed') ||
+        summary.includes('No clear search results') ||
+        summary.includes('No search results') ||
+        isBotProtectionBlock(summary) ||
+        summary.length < 80;
+
+      if (isFailedOrBlocked) {
         const jobId = 'scrape_search_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
         const searchUrl = `https://duckduckgo.com/?q=${encodeURIComponent(query)}`;
         const goal = `Find the answer for query: "${query}" from the search results.`;
         
         activeScrapeJobs.set(jobId, {
           jobId,
+          threadId: payload?.threadId || null,
           url: searchUrl,
           goal,
           outputSchema: null,
@@ -2634,7 +2687,7 @@ async function handleCommand(command, args, req, payload) {
           createdAt: Date.now()
         });
         
-        appendLog(`[Scraper] Static search failed. Initialized search scrape job ${jobId} for URL ${searchUrl}`);
+        appendLog(`[Scraper] Static search failed, blocked, or dynamic preferred. Initialized search scrape job ${jobId} for URL ${searchUrl}`);
         
         return {
           action: 'webview-scrape-start',
@@ -2642,18 +2695,61 @@ async function handleCommand(command, args, req, payload) {
           url: searchUrl,
           goal,
           status: 'scraping_started',
-          message: `Static search failed due to blocks/captchas. Launching dynamic webview search for "${query}"...`
+          message: `Static search failed, got blocked, or dynamic search was preferred. Launching dynamic webview search for "${query}"...`
         };
       }
       return { summary };
     }
     case 'visit_website':
-    case 'scrape_url':
+    case 'scrape_url': {
+      const url = normalizeText(args.url || args.query || 'https://example.com');
+      let pageHtml = '';
+      try {
+        pageHtml = await visitWebsite(url);
+      } catch (err) {
+        pageHtml = `Error visiting page: ${err.message}`;
+      }
+      
+      const pageText = cleanPageText(pageHtml);
+      const isBlocked = isBotProtectionBlock(pageText) || 
+                        !pageText || 
+                        pageText.includes('JavaScript is required') || 
+                        pageText.includes('enable cookies') || 
+                        pageText.length < 150;
+      
+      if (isBlocked) {
+        const jobId = 'scrape_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
+        const goal = `Read the content of this webpage and extract the useful details or text from it.`;
+        
+        activeScrapeJobs.set(jobId, {
+          jobId,
+          threadId: payload?.threadId || null,
+          url,
+          goal,
+          outputSchema: null,
+          maxSteps: 8,
+          currentStep: 0,
+          history: [],
+          status: 'started',
+          createdAt: Date.now()
+        });
+        
+        appendLog(`[Scraper] Static website visit failed or blocked. Initialized scrape job ${jobId} for URL ${url}`);
+        
+        return {
+          action: 'webview-scrape-start',
+          jobId,
+          url,
+          goal,
+          status: 'scraping_started',
+          message: `Static visit to ${url} failed or was blocked. Launching dynamic webview scraper to extract content...`
+        };
+      }
+      
       return {
-        text: summarizeText(
-          cleanPageText(await visitWebsite(normalizeText(args.url || args.query || 'https://example.com')))
-        ),
+        text: summarizeText(pageText)
       };
+    }
     case 'agentic_dynamic_scrape': {
       const jobId = 'scrape_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
       const url = normalizeText(args.url || args.query || 'https://example.com');
@@ -2661,6 +2757,7 @@ async function handleCommand(command, args, req, payload) {
       
       activeScrapeJobs.set(jobId, {
         jobId,
+        threadId: payload?.threadId || null,
         url,
         goal,
         outputSchema: args.outputSchema || null,
@@ -2707,6 +2804,9 @@ async function handleCommand(command, args, req, payload) {
       if (isBotProtectionBlock(trimmedText)) {
         job.status = 'failed';
         appendLog(`[Scraper ${jobId}] Aborted: Captcha/bot-protection wall detected at ${currentUrl}`);
+        if (job.threadId) {
+          appendChatMessage(job.threadId, 'system', `[System Scraper Log]: Step ${job.currentStep}/${job.maxSteps} - Aborted: Bot protection wall detected.`);
+        }
         activeScrapeJobs.delete(jobId);
         return { nextAction: { type: 'finish', data: `Blocked: The site at ${currentUrl} is protected by a captcha or bot-protection system (Cloudflare, reCAPTCHA, hCaptcha, Akamai, etc.) and cannot be automatically scraped. Try rephrasing your search or asking about a different source.`, reason: 'bot-protection' } };
       }
@@ -2771,6 +2871,11 @@ What is the next action?`;
       }
       
       appendLog(`[Scraper ${jobId}] Decided action: ${JSON.stringify(nextAction)}`);
+      
+      if (job.threadId && nextAction.type !== 'finish') {
+        appendChatMessage(job.threadId, 'system', `[System Scraper Log]: Step ${job.currentStep}/${job.maxSteps} - Decided action: ${nextAction.type} (${nextAction.reason || ''})`);
+      }
+      
       return { nextAction };
     }
     case 'run_shell_command': {
@@ -3177,7 +3282,7 @@ What is the next action?`;
               appendLog(`engine executing tool: ${call.name} with args ${JSON.stringify(call.args)}`);
               let executionResult;
               try {
-                executionResult = await handleCommand(call.name, call.args, req, payload);
+                executionResult = await handleCommand(call.name, call.args, req, { ...payload, threadId });
               } catch (e) {
                 appendLog(`tool ${call.name} failed: ${e.message}`);
                 executionResult = { ok: false, error: e.message };

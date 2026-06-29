@@ -14,6 +14,10 @@
           "query": {
             "type": "STRING",
             "description": "The search query, e.g. 'current fuel price in Lagos'"
+          },
+          "preferDynamic": {
+            "type": "BOOLEAN",
+            "description": "If true, bypasses the static search engine and immediately starts a dynamic WebView scraper session. Use this when the user explicitly asks for a dynamic, deep, or thorough search, or if previous searches were blocked."
           }
         },
         "required": ["query"]
