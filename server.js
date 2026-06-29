@@ -935,6 +935,57 @@ function sanitizeContentsForGemini(contents) {
   return sanitized;
 }
 
+async function fetchGeminiWithRetry(url, options, maxRetries = 3, delayMs = 1500) {
+  let attempt = 0;
+  while (attempt < maxRetries) {
+    attempt++;
+    try {
+      const response = await fetch(url, options);
+      const is503 = response.status === 503;
+      
+      let json = {};
+      try {
+        json = await response.json();
+      } catch (e) {
+        // ignore JSON parse error
+      }
+      
+      const errorMsg = json?.error?.message || json?.error || '';
+      const isServiceUnavailable = is503 || 
+                                   errorMsg.toLowerCase().includes('503') || 
+                                   errorMsg.toLowerCase().includes('service unavailable') || 
+                                   errorMsg.toLowerCase().includes('overloaded') ||
+                                   errorMsg.toLowerCase().includes('resource exhausted') ||
+                                   response.status === 429;
+
+      if (!response.ok) {
+        if (isServiceUnavailable && attempt < maxRetries) {
+          appendLog(`[Gemini API] Attempt ${attempt} failed with status ${response.status} (Service Unavailable/Overloaded). Retrying in ${delayMs}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delayMs));
+          continue;
+        }
+        throw new Error(errorMsg || `Gemini backend error ${response.status}`);
+      }
+      
+      return { response, json };
+    } catch (err) {
+      const isNetworkOr503 = err.message.toLowerCase().includes('503') || 
+                             err.message.toLowerCase().includes('service unavailable') || 
+                             err.message.toLowerCase().includes('overloaded') ||
+                             err.message.toLowerCase().includes('fetch failed') ||
+                             err.message.toLowerCase().includes('socket') ||
+                             err.message.toLowerCase().includes('timeout');
+                             
+      if (isNetworkOr503 && attempt < maxRetries) {
+        appendLog(`[Gemini API] Attempt ${attempt} threw error: ${err.message}. Retrying in ${delayMs}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 async function generateGeminiReply(thread) {
   const apiBaseUrl = getBackendApiBaseUrl();
   if (!apiBaseUrl) {
@@ -970,7 +1021,7 @@ async function generateGeminiReply(thread) {
 [Remembered Learnings, User Choices & Facts]
 ${recentMemories}`;
 
-  const response = await fetch(`${apiBaseUrl}/api/gemini/generate`, {
+  const { json } = await fetchGeminiWithRetry(`${apiBaseUrl}/api/gemini/generate`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -983,11 +1034,6 @@ ${recentMemories}`;
       googleAccessToken,
     }),
   });
-
-  const json = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(json?.error?.message || json?.error || `Gemini backend error ${response.status}`);
-  }
 
   const text = normalizeText(json.text || '');
   const functionCalls = json.functionCalls || [];
@@ -1028,7 +1074,7 @@ async function generateScraperGeminiReply(systemInstruction, promptText) {
     }
   ];
 
-  const response = await fetch(`${apiBaseUrl}/api/gemini/generate`, {
+  const { json } = await fetchGeminiWithRetry(`${apiBaseUrl}/api/gemini/generate`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -1040,11 +1086,6 @@ async function generateScraperGeminiReply(systemInstruction, promptText) {
       googleAccessToken,
     }),
   });
-
-  const json = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(json?.error?.message || json?.error || `Gemini backend error ${response.status}`);
-  }
 
   const text = normalizeText(json.text || '');
   return { text, raw: json };
