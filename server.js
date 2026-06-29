@@ -682,9 +682,9 @@ async function refreshGoogleAccessToken() {
 
   const clientId = normalizeText(
     googleAuth.clientId ||
-      googleAuth.androidClientId ||
-      engineConfig.googleClientId ||
-      ''
+    googleAuth.androidClientId ||
+    engineConfig.googleClientId ||
+    ''
   );
 
   if (!clientId) {
@@ -792,7 +792,7 @@ async function refreshAppAccessToken() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ refreshToken }),
   });
-  
+
   const json = await response.json().catch(() => ({}));
   if (!response.ok || !json.access_token) {
     throw new Error(json?.error || `Google App refresh failed ${response.status}`);
@@ -942,21 +942,21 @@ async function fetchGeminiWithRetry(url, options, maxRetries = 3, delayMs = 1500
     try {
       const response = await fetch(url, options);
       const is503 = response.status === 503;
-      
+
       let json = {};
       try {
         json = await response.json();
       } catch (e) {
         // ignore JSON parse error
       }
-      
+
       const errorMsg = json?.error?.message || json?.error || '';
-      const isServiceUnavailable = is503 || 
-                                   errorMsg.toLowerCase().includes('503') || 
-                                   errorMsg.toLowerCase().includes('service unavailable') || 
-                                   errorMsg.toLowerCase().includes('overloaded') ||
-                                   errorMsg.toLowerCase().includes('resource exhausted') ||
-                                   response.status === 429;
+      const isServiceUnavailable = is503 ||
+        errorMsg.toLowerCase().includes('503') ||
+        errorMsg.toLowerCase().includes('service unavailable') ||
+        errorMsg.toLowerCase().includes('overloaded') ||
+        errorMsg.toLowerCase().includes('resource exhausted') ||
+        response.status === 429;
 
       if (!response.ok) {
         if (isServiceUnavailable && attempt < maxRetries) {
@@ -966,16 +966,16 @@ async function fetchGeminiWithRetry(url, options, maxRetries = 3, delayMs = 1500
         }
         throw new Error(errorMsg || `Gemini backend error ${response.status}`);
       }
-      
+
       return { response, json };
     } catch (err) {
-      const isNetworkOr503 = err.message.toLowerCase().includes('503') || 
-                             err.message.toLowerCase().includes('service unavailable') || 
-                             err.message.toLowerCase().includes('overloaded') ||
-                             err.message.toLowerCase().includes('fetch failed') ||
-                             err.message.toLowerCase().includes('socket') ||
-                             err.message.toLowerCase().includes('timeout');
-                             
+      const isNetworkOr503 = err.message.toLowerCase().includes('503') ||
+        err.message.toLowerCase().includes('service unavailable') ||
+        err.message.toLowerCase().includes('overloaded') ||
+        err.message.toLowerCase().includes('fetch failed') ||
+        err.message.toLowerCase().includes('socket') ||
+        err.message.toLowerCase().includes('timeout');
+
       if (isNetworkOr503 && attempt < maxRetries) {
         appendLog(`[Gemini API] Attempt ${attempt} threw error: ${err.message}. Retrying in ${delayMs}ms...`);
         await new Promise(resolve => setTimeout(resolve, delayMs));
@@ -1005,7 +1005,7 @@ async function generateGeminiReply(thread) {
   const appStatus = getAppAuthStatus();
   const workspaceStatus = getGoogleAuthStatus();
   const connectorsList = connectors ? connectors.map(c => `• [${c.id}] ${c.label} (Status: ${c.status})`).join('\n') : 'None';
-  
+
   // Load the top 30 most recent memory records to inject directly into context so the agent has direct recall!
   const recentMemories = Array.isArray(memory) && memory.length > 0
     ? memory.slice(-30).map(m => `• [${m.kind}] ${m.key}: ${m.value}`).join('\n')
@@ -1047,7 +1047,7 @@ ${recentMemories}`;
     }
     appendLog(`Warning: Gemini returned empty content.${reason} Raw response: ${JSON.stringify(json)}`);
     return {
-      text: `Gemini returned an empty reply.${reason}`,
+      text: `idanAI returned an empty reply.${reason}`,
       functionCalls: [],
       raw: json,
     };
@@ -1620,7 +1620,7 @@ async function setAlarm(args) {
   }
 
   const cmd = `am start --user 0 -a android.intent.action.SET_ALARM --ei android.intent.extra.alarm.HOUR ${hour} --ei android.intent.extra.alarm.MINUTES ${minutes} --es android.intent.extra.alarm.MESSAGE "${label.replace(/"/g, '\\"')}" --ez android.intent.extra.alarm.SKIP_UI true`;
-  
+
   let success = false;
   let errorMsg = '';
   try {
@@ -1656,7 +1656,7 @@ async function setAlarm(args) {
     if (due.getTime() <= now.getTime()) {
       due.setDate(due.getDate() + 1);
     }
-    
+
     const reminder = {
       id: `rem_alarm_${Date.now()}`,
       title: `Alarm: ${label}`,
@@ -1667,7 +1667,7 @@ async function setAlarm(args) {
     };
     reminders.push(reminder);
     saveAll();
-    
+
     return {
       success: true,
       label,
@@ -1692,22 +1692,22 @@ let alarmIntervalId = null;
 function startAlarmLoop(alarmId, label) {
   activeRingingAlarms.add(`${label} (${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`);
   appendLog(`Alarm loop started for: ${label}`);
-  
+
   if (alarmIntervalId) return;
-  
-  executeShell('termux-vibrate -d 2000 -f').catch(() => {});
-  executeShell(`termux-tts-speak "Alarm: ${label.replace(/"/g, '\\"')}"`).catch(() => {});
-  
+
+  executeShell('termux-vibrate -d 2000 -f').catch(() => { });
+  executeShell(`termux-tts-speak "Alarm: ${label.replace(/"/g, '\\"')}"`).catch(() => { });
+
   alarmIntervalId = setInterval(() => {
     if (activeRingingAlarms.size === 0) {
       clearInterval(alarmIntervalId);
       alarmIntervalId = null;
       return;
     }
-    executeShell('termux-vibrate -d 2000 -f').catch(() => {});
+    executeShell('termux-vibrate -d 2000 -f').catch(() => { });
     const currentLabel = Array.from(activeRingingAlarms)[0] || 'Alarm';
     const cleanLabel = currentLabel.split(' (')[0];
-    executeShell(`termux-tts-speak "Alarm: ${cleanLabel.replace(/"/g, '\\"')}. Please dismiss or snooze."`).catch(() => {});
+    executeShell(`termux-tts-speak "Alarm: ${cleanLabel.replace(/"/g, '\\"')}. Please dismiss or snooze."`).catch(() => { });
   }, 4000);
 }
 
@@ -1746,13 +1746,13 @@ async function listNotifications(args) {
 }
 
 async function openNotificationSettings() {
-  await executeShell('am start --user 0 -a android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS').catch(() => {});
+  await executeShell('am start --user 0 -a android.settings.ACTION_NOTIFICATION_LISTENER_SETTINGS').catch(() => { });
   return { message: 'Opened Android Notification Listener settings page.' };
 }
 
 async function openNotification(args) {
   const pkg = args.packageName || 'com.whatsapp';
-  await executeShell(`monkey -p ${pkg} -c android.intent.category.LAUNCHER 1`).catch(() => {});
+  await executeShell(`monkey -p ${pkg} -c android.intent.category.LAUNCHER 1`).catch(() => { });
   return { message: `Opened app ${pkg} to view notification.` };
 }
 
@@ -2256,12 +2256,12 @@ async function handleCommand(command, args, req, payload) {
     case 'open_app_info':
       // Try shell first, fall back to app-side action
       await executeShell(`am start -a android.settings.APPLICATION_DETAILS_SETTINGS -d 'package:${String(args.packageName || '').replace(/'/g, '')}' 2>/dev/null`)
-        .catch(() => {});
+        .catch(() => { });
       return { action: 'open-app-info', packageName: args.packageName };
     case 'open_android_settings':
       return { action: 'open-settings', page: args.page };
     case 'wake_screen':
-      await executeShell('input keyevent KEYCODE_WAKEUP 2>/dev/null || input keyevent 224').catch(() => {});
+      await executeShell('input keyevent KEYCODE_WAKEUP 2>/dev/null || input keyevent 224').catch(() => { });
       return { action: 'wake-screen', ok: true };
     case 'share_text':
       return { action: 'share-text', text: args.text };
@@ -2479,8 +2479,8 @@ async function handleCommand(command, args, req, payload) {
       // Accept company config from the APK — held in memory only, never persisted
       if (args.config && typeof args.config === 'object') {
         if (args.config.backendApiBaseUrl) engineConfig.backendApiBaseUrl = normalizeText(args.config.backendApiBaseUrl).replace(/\/+$/, '');
-        if (args.config.geminiModel)      engineConfig.geminiModel      = normalizeText(args.config.geminiModel);
-        if (args.config.googleClientId)   engineConfig.googleClientId   = normalizeText(args.config.googleClientId);
+        if (args.config.geminiModel) engineConfig.geminiModel = normalizeText(args.config.geminiModel);
+        if (args.config.googleClientId) engineConfig.googleClientId = normalizeText(args.config.googleClientId);
         appendLog('engine config received from APK (memory only)');
       }
 
@@ -2712,18 +2712,18 @@ async function handleCommand(command, args, req, payload) {
 
       // Automatically run dynamic search by default unless preferStatic is true AND succeeded
       const runDynamic = !preferStatic ||
-                         !summary ||
-                         summary.startsWith('Search failed') ||
-                         summary.includes('No clear search results') ||
-                         summary.includes('No search results') ||
-                         isBotProtectionBlock(summary) ||
-                         summary.length < 80;
+        !summary ||
+        summary.startsWith('Search failed') ||
+        summary.includes('No clear search results') ||
+        summary.includes('No search results') ||
+        isBotProtectionBlock(summary) ||
+        summary.length < 80;
 
       if (runDynamic) {
         const jobId = 'scrape_search_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
         const searchUrl = `https://duckduckgo.com/?q=${encodeURIComponent(query)}`;
         const goal = `Find the answer for query: "${query}" from the search results.`;
-        
+
         activeScrapeJobs.set(jobId, {
           jobId,
           threadId: payload?.threadId || null,
@@ -2736,9 +2736,9 @@ async function handleCommand(command, args, req, payload) {
           status: 'started',
           createdAt: Date.now()
         });
-        
+
         appendLog(`[Scraper] Starting automatic dynamic search scrape job ${jobId} for URL ${searchUrl}`);
-        
+
         return {
           action: 'webview-scrape-start',
           jobId,
@@ -2759,18 +2759,18 @@ async function handleCommand(command, args, req, payload) {
       } catch (err) {
         pageHtml = `Error visiting page: ${err.message}`;
       }
-      
+
       const pageText = cleanPageText(pageHtml);
-      const isBlocked = isBotProtectionBlock(pageText) || 
-                        !pageText || 
-                        pageText.includes('JavaScript is required') || 
-                        pageText.includes('enable cookies') || 
-                        pageText.length < 150;
-      
+      const isBlocked = isBotProtectionBlock(pageText) ||
+        !pageText ||
+        pageText.includes('JavaScript is required') ||
+        pageText.includes('enable cookies') ||
+        pageText.length < 150;
+
       if (isBlocked) {
         const jobId = 'scrape_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
         const goal = `Read the content of this webpage and extract the useful details or text from it.`;
-        
+
         activeScrapeJobs.set(jobId, {
           jobId,
           threadId: payload?.threadId || null,
@@ -2783,9 +2783,9 @@ async function handleCommand(command, args, req, payload) {
           status: 'started',
           createdAt: Date.now()
         });
-        
+
         appendLog(`[Scraper] Static website visit failed or blocked. Initialized scrape job ${jobId} for URL ${url}`);
-        
+
         return {
           action: 'webview-scrape-start',
           jobId,
@@ -2795,7 +2795,7 @@ async function handleCommand(command, args, req, payload) {
           message: `Static visit to ${url} failed or was blocked. Launching dynamic webview scraper to extract content...`
         };
       }
-      
+
       return {
         text: summarizeText(pageText)
       };
@@ -2804,7 +2804,7 @@ async function handleCommand(command, args, req, payload) {
       const jobId = 'scrape_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
       const url = normalizeText(args.url || args.query || 'https://example.com');
       const goal = normalizeText(args.goal || 'Scrape the page content');
-      
+
       activeScrapeJobs.set(jobId, {
         jobId,
         threadId: payload?.threadId || null,
@@ -2817,9 +2817,9 @@ async function handleCommand(command, args, req, payload) {
         status: 'started',
         createdAt: Date.now()
       });
-      
+
       appendLog(`[Scraper] Initialized job ${jobId} for URL ${url} with goal: "${goal}"`);
-      
+
       return {
         action: 'webview-scrape-start',
         jobId,
@@ -2833,23 +2833,23 @@ async function handleCommand(command, args, req, payload) {
       const jobId = normalizeText(args.jobId);
       const pageText = normalizeText(args.pageText || '');
       const currentUrl = normalizeText(args.currentUrl || '');
-      
+
       const job = activeScrapeJobs.get(jobId);
       if (!job) {
         appendLog(`[Scraper] report_scrape_step error: Job ${jobId} not found`);
         return { error: 'Job not found' };
       }
-      
+
       job.currentStep += 1;
       if (job.currentStep > job.maxSteps) {
         job.status = 'failed';
         appendLog(`[Scraper ${jobId}] Failed: Exceeded max steps`);
         return { nextAction: { type: 'finish', data: 'Failed: exceeded maximum navigation steps' } };
       }
-      
+
       // Trim page text to prevent exceeding LLM context limits
       const trimmedText = pageText.slice(0, 10000);
-      
+
       // Abort immediately if any captcha or bot-protection wall is detected
       if (isBotProtectionBlock(trimmedText)) {
         job.status = 'failed';
@@ -2885,7 +2885,7 @@ Current URL: ${currentUrl}
 Step: ${job.currentStep}/${job.maxSteps}
 
 Previous Steps History:
-${job.history.map((h, i) => `Step ${i+1}: Action: ${JSON.stringify(h.action)} -> Result: ${h.result}`).join('\n') || 'None'}
+${job.history.map((h, i) => `Step ${i + 1}: Action: ${JSON.stringify(h.action)} -> Result: ${h.result}`).join('\n') || 'None'}
 
 Current Visible Page Text:
 """
@@ -2895,7 +2895,7 @@ ${trimmedText}
 What is the next action?`;
 
       appendLog(`[Scraper ${jobId}] Step ${job.currentStep}: Prompting Gemini for next action...`);
-      
+
       let nextAction;
       try {
         const result = await generateScraperGeminiReply(systemInstruction, promptText);
@@ -2906,26 +2906,26 @@ What is the next action?`;
         appendLog(`[Scraper ${jobId}] Failed to get action from Gemini: ${err.message}`);
         nextAction = { type: 'finish', data: 'Error planning next action: ' + err.message };
       }
-      
+
       // Update history
       job.history.push({
         action: nextAction,
         result: nextAction.type === 'finish' ? 'Finished' : 'Executed ' + nextAction.type
       });
-      
+
       if (nextAction.type === 'finish') {
         job.status = 'completed';
         job.result = nextAction.data;
       } else {
         job.status = 'executing';
       }
-      
+
       appendLog(`[Scraper ${jobId}] Decided action: ${JSON.stringify(nextAction)}`);
-      
+
       if (job.threadId && nextAction.type !== 'finish') {
         appendChatMessage(job.threadId, 'system', `[System Scraper Log]: Step ${job.currentStep}/${job.maxSteps} - Decided action: ${nextAction.type} (${nextAction.reason || ''})`);
       }
-      
+
       return { nextAction };
     }
     case 'run_shell_command': {
@@ -3088,7 +3088,7 @@ What is the next action?`;
         'https://www.googleapis.com/auth/forms.responses',
         'https://www.googleapis.com/auth/userinfo.email'
       ].join(' ');
-      
+
       const redirectUri = `http://localhost:${PORT}/auth/google/callback`;
       const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?` + new URLSearchParams({
         client_id: clientId,
@@ -3098,7 +3098,7 @@ What is the next action?`;
         access_type: 'offline',
         prompt: 'consent'
       }).toString();
-      
+
       return { url: authUrl };
     }
     case 'google_docs_open':
@@ -3351,12 +3351,12 @@ What is the next action?`;
             continue;
           }
 
-          replyText = result.text || 'Gemini returned an empty reply.';
+          replyText = result.text || 'idanAI returned an empty reply.';
           assistantMessage = appendChatMessage(threadId, 'assistant', replyText);
           break;
         } catch (error) {
-          appendLog(`gemini chat loop error: ${error.message}`);
-          replyText = `Gemini chat failed: ${error.message}`;
+          appendLog(`idanAI chat loop error: ${error.message}`);
+          replyText = `idanAI chat failed: ${error.message}`;
           assistantMessage = appendChatMessage(threadId, 'assistant', replyText);
           break;
         }
@@ -3549,7 +3549,7 @@ const server = http.createServer(async (req, res) => {
 
       appendLog(`received RPC: ${command}`); // Log incoming requests
 
-    if (command !== 'health' && command !== 'status' && command !== 'version' && command !== 'pair') {
+      if (command !== 'health' && command !== 'status' && command !== 'version' && command !== 'pair') {
         if (!requireAuth(req, res, payload)) return;
 
         // License gate — engine refuses all commands until a valid license token is received
@@ -3597,5 +3597,5 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, HOST, () => {
   appendLog(`listening on http://${HOST}:${PORT}`);
   console.log(`Idan engine listening on http://${HOST}:${PORT}`);
-  executeShell('termux-wake-lock').catch(() => {});
+  executeShell('termux-wake-lock').catch(() => { });
 });
