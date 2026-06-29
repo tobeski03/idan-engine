@@ -2829,6 +2829,15 @@ async function handleCommand(command, args, req, payload) {
         message: `Starting a dynamic scrape for ${url} to find "${goal}". I will update you once it's complete.`
       };
     }
+    case 'stop_scraping': {
+      activeScrapeJobs.clear();
+      appendLog('[Scraper] User requested stop. Cleared all active scrape jobs.');
+      return {
+        action: 'webview-scrape-stop',
+        status: 'stopped',
+        message: 'All active scraping and web search jobs have been stopped.'
+      };
+    }
     case 'report_scrape_step': {
       const jobId = normalizeText(args.jobId);
       const pageText = normalizeText(args.pageText || '');

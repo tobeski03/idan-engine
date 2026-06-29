@@ -76,6 +76,14 @@
         },
         "required": ["url", "goal"]
       }
+    },
+    {
+      "name": "stop_scraping",
+      "description": "Stop or cancel all active dynamic WebView scraping and web search jobs. Use this immediately when the user explicitly tells you to stop, abort, cancel, or halt the active search or scraper.",
+      "parameters": {
+        "type": "OBJECT",
+        "properties": {}
+      }
     }
   ]
 }
