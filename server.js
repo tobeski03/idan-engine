@@ -107,7 +107,11 @@ Key Guidelines:
 4. Separate Google Services:
    - Google App Login is used ONLY for your chat authorization.
    - Google Workspace Integration is used to run Gmail, Sheets, Docs, and Forms locally using local credentials. Do not confuse the two.
-5. Tone & Personality:
+5. Continuous Learning & Autosave Memory:
+   - You are equipped with a durable, long-term memory system. You MUST automatically and proactively save discoveries (e.g. shell command parameters, workarounds that succeeded, custom script designs), user choices/preferences, behaviors, facts about the user, and lessons from mistakes (e.g. what command failed, and how you resolved it) using the 'remember_user_fact' tool.
+   - Do NOT ask the user for permission to save these memories. Auto-save them in the background whenever you learn a new preference, solve a bug, or discover a useful trick.
+   - The engine automatically retrieves recent memories and feeds them directly into your context. Use this context to avoid repeating errors, immediately apply past workarounds, and align with user preferences.
+6. Tone & Personality:
    - Sound premium, capable, intelligent, and highly competent. Use formatting (bolding, lists, markdown tables) to display data beautifully. Do not output raw JSON outputs to the user; parse and explain them.`;
 
 function readJsonFile(file, fallback) {
@@ -951,12 +955,20 @@ async function generateGeminiReply(thread) {
   const workspaceStatus = getGoogleAuthStatus();
   const connectorsList = connectors ? connectors.map(c => `• [${c.id}] ${c.label} (Status: ${c.status})`).join('\n') : 'None';
   
+  // Load the top 30 most recent memory records to inject directly into context so the agent has direct recall!
+  const recentMemories = Array.isArray(memory) && memory.length > 0
+    ? memory.slice(-30).map(m => `• [${m.kind}] ${m.key}: ${m.value}`).join('\n')
+    : 'None';
+
   const statusPrompt = `\n\n[System Environment Status]
 - Current Local Time: ${new Date().toString()}
 - Current Date: ${new Date().toISOString().split('T')[0]}
 - Google App Login: ${appStatus.connected ? `Logged In as ${appStatus.email}` : 'Not Logged In'}
 - Google Workspace Integration: ${workspaceStatus.connected ? `Connected as ${workspaceStatus.email}` : 'Not Connected'}
-- Active Engine Connectors:\n${connectorsList}`;
+- Active Engine Connectors:\n${connectorsList}
+
+[Remembered Learnings, User Choices & Facts]
+${recentMemories}`;
 
   const response = await fetch(`${apiBaseUrl}/api/gemini/generate`, {
     method: 'POST',
@@ -2646,14 +2658,10 @@ async function handleCommand(command, args, req, payload) {
       return { removed: cancelRecurringTask(normalizeText(args.taskId)) };
     case 'google_search': {
       const query = args.query || '';
-      const preferDynamic = !!args.preferDynamic || 
-                            /dynamic/i.test(query) || 
-                            /deep/i.test(query) || 
-                            /scrape/i.test(query) || 
-                            /webview/i.test(query);
+      const preferStatic = !!args.preferStatic || !!args.static;
 
       let summary = '';
-      if (!preferDynamic) {
+      if (preferStatic) {
         try {
           summary = await handleSearch(query);
         } catch (e) {
@@ -2661,15 +2669,16 @@ async function handleCommand(command, args, req, payload) {
         }
       }
 
-      const isFailedOrBlocked = !summary ||
-        preferDynamic ||
-        summary.startsWith('Search failed') ||
-        summary.includes('No clear search results') ||
-        summary.includes('No search results') ||
-        isBotProtectionBlock(summary) ||
-        summary.length < 80;
+      // Automatically run dynamic search by default unless preferStatic is true AND succeeded
+      const runDynamic = !preferStatic ||
+                         !summary ||
+                         summary.startsWith('Search failed') ||
+                         summary.includes('No clear search results') ||
+                         summary.includes('No search results') ||
+                         isBotProtectionBlock(summary) ||
+                         summary.length < 80;
 
-      if (isFailedOrBlocked) {
+      if (runDynamic) {
         const jobId = 'scrape_search_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7);
         const searchUrl = `https://duckduckgo.com/?q=${encodeURIComponent(query)}`;
         const goal = `Find the answer for query: "${query}" from the search results.`;
@@ -2687,7 +2696,7 @@ async function handleCommand(command, args, req, payload) {
           createdAt: Date.now()
         });
         
-        appendLog(`[Scraper] Static search failed, blocked, or dynamic preferred. Initialized search scrape job ${jobId} for URL ${searchUrl}`);
+        appendLog(`[Scraper] Starting automatic dynamic search scrape job ${jobId} for URL ${searchUrl}`);
         
         return {
           action: 'webview-scrape-start',
@@ -2695,7 +2704,7 @@ async function handleCommand(command, args, req, payload) {
           url: searchUrl,
           goal,
           status: 'scraping_started',
-          message: `Static search failed, got blocked, or dynamic search was preferred. Launching dynamic webview search for "${query}"...`
+          message: `Launching dynamic webview search for "${query}" to find the answer...`
         };
       }
       return { summary };

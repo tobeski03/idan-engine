@@ -15,9 +15,9 @@
             "type": "STRING",
             "description": "The search query, e.g. 'current fuel price in Lagos'"
           },
-          "preferDynamic": {
+          "preferStatic": {
             "type": "BOOLEAN",
-            "description": "If true, bypasses the static search engine and immediately starts a dynamic WebView scraper session. Use this when the user explicitly asks for a dynamic, deep, or thorough search, or if previous searches were blocked."
+            "description": "If true, performs a fast static web search returning a list of webpage links. By default this is false, meaning the engine runs an automatic dynamic WebView search to find the actual answer from the webpage contents."
           }
         },
         "required": ["query"]

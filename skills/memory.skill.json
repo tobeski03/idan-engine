@@ -7,22 +7,22 @@
   "toolDeclarations": [
     {
       "name": "remember_user_fact",
-      "description": "Save durable personal memory when the user explicitly states something to remember, such as their name, preferences, CV details, important people, schedule facts, or favorite music.",
+      "description": "Save a learning, user choice, preference, behavior, command discovery, fact, or procedure to durable memory. Call this automatically and proactively whenever you learn something new (e.g. a command that solved a problem, user's behavioral choice, or mistake to avoid) or when the user explicitly states something to remember.",
       "parameters": {
         "type": "OBJECT",
         "properties": {
           "kind": {
             "type": "STRING",
-            "enum": ["profile", "preference", "person", "habit", "schedule", "media", "communication", "fact"],
-            "description": "Memory category."
+            "enum": ["profile", "preference", "person", "habit", "schedule", "media", "communication", "fact", "learning", "discovery", "behavior", "procedure", "error_fix"],
+            "description": "Memory category. Use 'learning' for lessons/mistakes avoided, 'discovery' for command combinations/solutions, 'behavior' or 'preference' for user habits, choices, and profile/fact for user details."
           },
           "key": {
             "type": "STRING",
-            "description": "Stable short key for the memory, such as user:self, favorite:song, contact:john, or cv:work."
+            "description": "Stable short key for the memory, such as user:self, favorite:song, contact:john, command:git, or trick:port."
           },
           "value": {
             "type": "STRING",
-            "description": "The fact or summary to remember."
+            "description": "The fact, discovery, behavior description, or error-fix to remember."
           },
           "confidence": {
             "type": "NUMBER",
@@ -61,7 +61,7 @@
           },
           "kind": {
             "type": "STRING",
-            "enum": ["profile", "preference", "person", "habit", "schedule", "media", "communication", "fact", "task", "rule", "procedure", "safety"],
+            "enum": ["profile", "preference", "person", "habit", "schedule", "media", "communication", "fact", "task", "rule", "procedure", "safety", "learning", "discovery", "behavior", "procedure", "error_fix"],
             "description": "Optional memory category filter."
           }
         },
