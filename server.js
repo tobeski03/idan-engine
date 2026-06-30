@@ -1984,8 +1984,26 @@ async function connectAdb() {
     execFile('adb', ['connect', `127.0.0.1:${port}`], { timeout: 4000 }, (err, stdout, stderr) => {
       const out = (stdout || '') + (stderr || '');
       if (out.includes('connected to') || out.includes('already connected')) {
-        adbState.connected = true;
-        adbState.error = null;
+        execFile('adb', ['devices'], { timeout: 2000 }, (devErr, devStdout) => {
+          const devOut = devStdout || '';
+          const deviceRegex = new RegExp(`127\\.0\\.0\\.1:${port}\\s+device`, 'i');
+          const unauthorizedRegex = new RegExp(`127\\.0\\.0\\.1:${port}\\s+unauthorized`, 'i');
+          const offlineRegex = new RegExp(`127\\.0\\.0\\.1:${port}\\s+offline`, 'i');
+
+          if (deviceRegex.test(devOut)) {
+            adbState.connected = true;
+            adbState.error = null;
+          } else if (unauthorizedRegex.test(devOut)) {
+            adbState.connected = false;
+            adbState.error = 'Device unauthorized. Please accept the prompt on your screen.';
+          } else if (offlineRegex.test(devOut)) {
+            adbState.connected = false;
+            adbState.error = 'Device offline. Check Wireless Debugging status.';
+          } else {
+            adbState.connected = false;
+            adbState.error = 'Device not fully authorized or connected.';
+          }
+        });
       } else {
         adbState.connected = false;
         adbState.error = out.trim() || 'Authentication failed or unauthorized.';
@@ -2001,13 +2019,24 @@ function checkAdbStatus() {
   if (!adbState.port) {
     return connectAdb();
   }
-  execFile('adb', ['shell', 'getprop', 'ro.product.device'], { timeout: 1500 }, (err, stdout, stderr) => {
-    if (err || (stderr && stderr.includes('error')) || !stdout.trim()) {
-      adbState.connected = false;
-      connectAdb();
-    } else {
+  execFile('adb', ['devices'], { timeout: 2000 }, (err, stdout, stderr) => {
+    const out = stdout || '';
+    const deviceRegex = new RegExp(`127\\.0\\.0\\.1:${adbState.port}\\s+device`, 'i');
+    if (deviceRegex.test(out)) {
       adbState.connected = true;
       adbState.error = null;
+    } else {
+      adbState.connected = false;
+      const unauthorizedRegex = new RegExp(`127\\.0\\.0\\.1:${adbState.port}\\s+unauthorized`, 'i');
+      const offlineRegex = new RegExp(`127\\.0\\.0\\.1:${adbState.port}\\s+offline`, 'i');
+      if (unauthorizedRegex.test(out)) {
+        adbState.error = 'Device unauthorized. Please accept the prompt on your screen.';
+      } else if (offlineRegex.test(out)) {
+        adbState.error = 'Device offline. Check Wireless Debugging status.';
+      } else {
+        adbState.error = 'ADB disconnected.';
+      }
+      connectAdb();
     }
   });
 }
