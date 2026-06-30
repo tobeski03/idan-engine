@@ -53,6 +53,7 @@ _pkg_install git          git
 _pkg_install nodejs-lts   node
 _pkg_install curl         curl
 _pkg_install termux-api   termux-battery-status
+_pkg_install android-tools adb
 
 # ── Step 2: Termux:API companion app check ────────────────────────────────────
 if ! pm list packages 2>/dev/null | grep -q "package:com.termux.api"; then

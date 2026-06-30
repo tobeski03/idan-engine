@@ -321,6 +321,11 @@ function snapshot() {
     connectorCount: connectors.length,
     chatThreadCount: Object.keys(chats.threads || {}).length,
     activeAlarms: Array.from(activeRingingAlarms),
+    adb: {
+      connected: adbState.connected,
+      port: adbState.port,
+      error: adbState.error,
+    },
   };
 }
 
@@ -1862,20 +1867,181 @@ function startRemindersScheduler() {
   setInterval(checkDueReminders, 15000);
 }
 
+const adbState = {
+  connected: false,
+  port: null,
+  error: null,
+};
+
+const net = require('net');
+
+function scanPort(port) {
+  return new Promise((resolve) => {
+    const socket = new net.Socket();
+    socket.setTimeout(250);
+    socket.on('connect', () => {
+      socket.destroy();
+      resolve(port);
+    });
+    socket.on('timeout', () => {
+      socket.destroy();
+      resolve(null);
+    });
+    socket.on('error', () => {
+      socket.destroy();
+      resolve(null);
+    });
+    socket.connect(port, '127.0.0.1');
+  });
+}
+
+function testAdbPort(port) {
+  return new Promise((resolve) => {
+    execFile('adb', ['connect', `127.0.0.1:${port}`], { timeout: 2000 }, (err, stdout, stderr) => {
+      const out = (stdout || '') + (stderr || '');
+      if (out.includes('connected to') || out.includes('already connected') || out.includes('authenticate') || out.includes('unauthorized')) {
+        resolve(true);
+      } else {
+        resolve(false);
+      }
+    });
+  });
+}
+
+function findPortInMdns() {
+  return new Promise((resolve) => {
+    execFile('adb', ['mdns', 'services'], { timeout: 3000 }, (err, stdout, stderr) => {
+      if (err) return resolve(null);
+      const out = stdout + (stderr || '');
+      const matches = out.match(/(?:127\.0\.0\.1|localhost|tls-connect\._tcp\..*?):(\d{4,5})/gi);
+      if (matches) {
+        for (const match of matches) {
+          const portStr = match.split(':').pop();
+          const port = parseInt(portStr, 10);
+          if (port >= 30000 && port <= 45000) {
+            return resolve(port);
+          }
+        }
+      }
+      resolve(null);
+    });
+  });
+}
+
+async function discoverAdbPort() {
+  const mdnsPort = await findPortInMdns();
+  if (mdnsPort) {
+    const ok = await testAdbPort(mdnsPort);
+    if (ok) return mdnsPort;
+  }
+
+  const start = 35000;
+  const end = 45000;
+  const batchSize = 100;
+  
+  for (let i = start; i <= end; i += batchSize) {
+    const promises = [];
+    for (let p = i; p < i + batchSize && p <= end; p++) {
+      promises.push(scanPort(p));
+    }
+    const results = await Promise.all(promises);
+    for (const port of results) {
+      if (port !== null) {
+        const ok = await testAdbPort(port);
+        if (ok) return port;
+      }
+    }
+  }
+
+  for (let i = 30000; i < 35000; i += batchSize) {
+    const promises = [];
+    for (let p = i; p < i + batchSize && p < 35000; p++) {
+      promises.push(scanPort(p));
+    }
+    const results = await Promise.all(promises);
+    for (const port of results) {
+      if (port !== null) {
+        const ok = await testAdbPort(port);
+        if (ok) return port;
+      }
+    }
+  }
+
+  return null;
+}
+
+async function connectAdb() {
+  try {
+    const port = await discoverAdbPort();
+    if (!port) {
+      adbState.connected = false;
+      adbState.port = null;
+      adbState.error = 'No active local wireless debugging port found.';
+      return;
+    }
+
+    adbState.port = port;
+    execFile('adb', ['connect', `127.0.0.1:${port}`], { timeout: 4000 }, (err, stdout, stderr) => {
+      const out = (stdout || '') + (stderr || '');
+      if (out.includes('connected to') || out.includes('already connected')) {
+        adbState.connected = true;
+        adbState.error = null;
+      } else {
+        adbState.connected = false;
+        adbState.error = out.trim() || 'Authentication failed or unauthorized.';
+      }
+    });
+  } catch (error) {
+    adbState.connected = false;
+    adbState.error = error.message;
+  }
+}
+
+function checkAdbStatus() {
+  if (!adbState.port) {
+    return connectAdb();
+  }
+  execFile('adb', ['shell', 'getprop', 'ro.product.device'], { timeout: 1500 }, (err, stdout, stderr) => {
+    if (err || (stderr && stderr.includes('error')) || !stdout.trim()) {
+      adbState.connected = false;
+      connectAdb();
+    } else {
+      adbState.connected = true;
+      adbState.error = null;
+    }
+  });
+}
+
+function startAdbManager() {
+  // Run initial check
+  checkAdbStatus();
+  // Check every 30 seconds
+  setInterval(checkAdbStatus, 30000);
+}
+
+
 async function executeShell(command) {
   let cmd = 'sh';
   // Do NOT use -l (login shell) — it breaks PATH and profile sourcing on Termux
   let args = ['-c', command];
 
+  const ADB_REQUIRED_CMDS = ['dumpsys', 'getprop', 'am', 'pm', 'cmd', 'svc', 'settings', 'input', 'monkey'];
+  const firstWord = command.trim().split(/\s+/)[0];
+
   if (process.platform === 'win32') {
-    const androidCmds = ['dumpsys', 'getprop', 'termux-flashlight', 'termux-wifi-enable', 'termux-volume', 'am', 'pm', 'cmd', 'svc'];
-    const firstWord = command.split(' ')[0];
-    if (androidCmds.includes(firstWord)) {
+    const win32AdbCmds = [...ADB_REQUIRED_CMDS, 'termux-flashlight', 'termux-wifi-enable', 'termux-volume'];
+    if (win32AdbCmds.includes(firstWord)) {
       cmd = 'adb';
       args = ['shell', command];
     } else {
       cmd = 'cmd.exe';
       args = ['/c', command];
+    }
+  } else {
+    // Linux/Termux: route privileged commands to adb shell
+    if (ADB_REQUIRED_CMDS.includes(firstWord)) {
+      cmd = 'adb';
+      args = ['shell', command];
     }
   }
 
@@ -2940,6 +3106,10 @@ What is the next action?`;
     case 'run_shell_command': {
       const cmd = normalizeText(args.command || '');
       if (!cmd) return { ok: false, error: 'No command provided' };
+      if (/\badb\b/i.test(cmd) || cmd.includes('/adb')) {
+        appendLog(`[Shell] Blocked restricted command: ${cmd}`);
+        return { ok: false, error: 'Security Exception: Direct execution of adb commands is blocked via the shell interface. Use specific device tools or connections instead.' };
+      }
       const timeoutMs = Math.min(Number(args.timeout || 30), 120) * 1000;
       appendLog(`[Shell] Executing: ${cmd}`);
       try {
@@ -3035,6 +3205,34 @@ What is the next action?`;
         device: await executeShell('getprop ro.product.device').catch(() => 'unknown'),
         manufacturer: await executeShell('getprop ro.product.manufacturer').catch(() => 'unknown'),
       };
+    case 'adb_pair': {
+      const port = Number(args.port);
+      const code = String(args.code || '').trim();
+      if (!port || !code) {
+        return { ok: false, error: 'Both pairing port and pairing code are required.' };
+      }
+      
+      appendLog(`[ADB] Running pair command for port ${port}`);
+      try {
+        const result = await new Promise((resolve, reject) => {
+          execFile('adb', ['pair', `127.0.0.1:${port}`, code], { timeout: 10000 }, (err, stdout, stderr) => {
+            const out = (stdout || '') + (stderr || '');
+            if (err) {
+              reject(new Error(out.trim() || err.message));
+            } else {
+              resolve(out.trim());
+            }
+          });
+        });
+        
+        appendLog(`[ADB] Pair successful: ${result}`);
+        connectAdb();
+        return { ok: true, message: result };
+      } catch (err) {
+        appendLog(`[ADB] Pair failed: ${err.message}`);
+        return { ok: false, error: err.message };
+      }
+    }
     case 'basic_phone_info':
     case 'phone_info':
       return {
@@ -3418,6 +3616,7 @@ What is the next action?`;
 
 ensureRecurringTimers();
 startRemindersScheduler();
+startAdbManager();
 appendLog(`engine started v${VERSION}`);
 
 const server = http.createServer(async (req, res) => {
