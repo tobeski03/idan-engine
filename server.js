@@ -1898,12 +1898,18 @@ function scanPort(port) {
 function testAdbPort(port) {
   return new Promise((resolve) => {
     execFile('adb', ['connect', `127.0.0.1:${port}`], { timeout: 2000 }, (err, stdout, stderr) => {
-      const out = (stdout || '') + (stderr || '');
-      if (out.includes('connected to') || out.includes('already connected') || out.includes('authenticate') || out.includes('unauthorized')) {
-        resolve(true);
-      } else {
-        resolve(false);
-      }
+      execFile('adb', ['devices'], { timeout: 1500 }, (devErr, devStdout) => {
+        const out = devStdout || '';
+        const deviceRegex = new RegExp(`127\\.0\\.0\\.1:${port}\\s+(device|unauthorized)`, 'i');
+        if (deviceRegex.test(out)) {
+          resolve(true);
+        } else {
+          // Clean up the dead port from ADB's cached list
+          execFile('adb', ['disconnect', `127.0.0.1:${port}`], () => {
+            resolve(false);
+          });
+        }
+      });
     });
   });
 }
@@ -1935,27 +1941,13 @@ async function discoverAdbPort() {
     if (ok) return mdnsPort;
   }
 
-  const start = 35000;
-  const end = 45000;
-  const batchSize = 100;
+  const start = 30000;
+  const end = 65535;
+  const batchSize = 150;
   
   for (let i = start; i <= end; i += batchSize) {
     const promises = [];
     for (let p = i; p < i + batchSize && p <= end; p++) {
-      promises.push(scanPort(p));
-    }
-    const results = await Promise.all(promises);
-    for (const port of results) {
-      if (port !== null) {
-        const ok = await testAdbPort(port);
-        if (ok) return port;
-      }
-    }
-  }
-
-  for (let i = 30000; i < 35000; i += batchSize) {
-    const promises = [];
-    for (let p = i; p < i + batchSize && p < 35000; p++) {
       promises.push(scanPort(p));
     }
     const results = await Promise.all(promises);
