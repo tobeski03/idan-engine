@@ -3106,11 +3106,8 @@ What is the next action?`;
     case 'run_shell_command': {
       const cmd = normalizeText(args.command || '');
       if (!cmd) return { ok: false, error: 'No command provided' };
-      if (/\badb\b/i.test(cmd) || cmd.includes('/adb')) {
-        appendLog(`[Shell] Blocked restricted command: ${cmd}`);
-        return { ok: false, error: 'Security Exception: Direct execution of adb commands is blocked via the shell interface. Use specific device tools or connections instead.' };
-      }
       const timeoutMs = Math.min(Number(args.timeout || 30), 120) * 1000;
+
       appendLog(`[Shell] Executing: ${cmd}`);
       try {
         const output = await Promise.race([
