@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const path = require('path');
 const fs = require('fs');
@@ -10,13 +10,16 @@ let whatsappState = {
   phoneNumber: null,
 };
 
-function cleanAuthFolder() {
+async function cleanAuthFolder() {
   const authDir = path.join(__dirname, 'whatsapp-auth');
   if (fs.existsSync(authDir)) {
-    try {
-      fs.rmSync(authDir, { recursive: true, force: true });
-    } catch (e) {
-      // ignore
+    for (let i = 0; i < 10; i++) {
+      try {
+        fs.rmSync(authDir, { recursive: true, force: true });
+        break;
+      } catch (e) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
     }
   }
 }
@@ -36,7 +39,7 @@ async function disconnectWhatsApp() {
   whatsappState.status = 'disconnected';
   whatsappState.pairingCode = null;
   whatsappState.phoneNumber = null;
-  cleanAuthFolder();
+  await cleanAuthFolder();
 }
 
 function getWhatsAppStatus() {
@@ -138,10 +141,20 @@ async function initWhatsApp(appendLog, processMessageThroughModel) {
     whatsappState.status = 'connecting';
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
+    let version = [2, 3000, 1017531287];
+    try {
+      const { version: latestVersion } = await fetchLatestBaileysVersion();
+      version = latestVersion;
+    } catch (err) {
+      appendLog(`[WhatsApp] Failed to fetch latest version: ${err.message}`);
+    }
+
     sock = makeWASocket({
+      version,
       auth: state,
       logger: pino({ level: 'silent' }),
       printQRInTerminal: false,
+      browser: ['Ubuntu', 'Chrome', '20.0.04'],
     });
 
     bindEvents(sock, authDir, saveCreds, appendLog, processMessageThroughModel);
@@ -169,10 +182,20 @@ async function connectWhatsApp(phoneNumber, appendLog, processMessageThroughMode
   const authDir = path.join(__dirname, 'whatsapp-auth');
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
+  let version = [2, 3000, 1017531287];
+  try {
+    const { version: latestVersion } = await fetchLatestBaileysVersion();
+    version = latestVersion;
+  } catch (err) {
+    appendLog(`[WhatsApp] Failed to fetch latest version: ${err.message}`);
+  }
+
   sock = makeWASocket({
+    version,
     auth: state,
     logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
+    browser: ['Ubuntu', 'Chrome', '20.0.04'],
   });
 
   bindEvents(sock, authDir, saveCreds, appendLog, processMessageThroughModel);
