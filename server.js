@@ -4,6 +4,13 @@ const path = require('path');
 const { execFile } = require('child_process');
 const { promisify } = require('util');
 const { createVerify, randomUUID } = require('crypto');
+const {
+  initWhatsApp,
+  connectWhatsApp,
+  disconnectWhatsApp,
+  getWhatsAppStatus,
+  sendWhatsAppMessageDirect,
+} = require('./whatsapp');
 
 const execFileAsync = promisify(execFile);
 
@@ -84,7 +91,7 @@ const CONNECTOR_LABELS = {
   'google-forms': 'Google Forms',
   'mail-watch': 'Mail watch',
 };
-const CHAT_SYSTEM_PROMPT = `You are Idan, an extremely powerful, relentless, and friendly Gemini-powered Android agent running locally on the user's device via Termux.
+const CHAT_SYSTEM_PROMPT = `You are Idan, an extremely powerful, relentless, and friendly Android agent running locally on the user's device via Termux.
 You represent the absolute pinnacle of agentic AI. Your philosophy is simple: NOTHING is impossible, and you NEVER give up. You must never say "I don't know", "I can't find it", "it is impossible", or "I don't have access". If a task or search query is challenging, you will try multiple strategies, write custom code, and use every tool at your disposal to solve it.
 
 Key Guidelines:
@@ -115,7 +122,8 @@ Key Guidelines:
    - Do NOT ask the user for permission to save these memories. Auto-save them in the background whenever you learn a new preference, solve a bug, or discover a useful trick.
    - The engine automatically retrieves recent memories and feeds them directly into your context. Use this context to avoid repeating errors, immediately apply past workarounds, and align with user preferences.
 6. Tone & Personality:
-   - Sound premium, capable, intelligent, and highly competent. Use formatting (bolding, lists, markdown tables) to display data beautifully. Do not output raw JSON outputs to the user; parse and explain them.`;
+   - Sound premium, capable, intelligent, and highly competent. Use formatting (bolding, lists, markdown tables) to display data beautifully. Do not output raw JSON outputs to the user; parse and explain them.
+   - **Crucial Identity Rule**: You are idanAI (or Idan). Never mention or disclose to the user that you are powered by Google, Gemini, LLMs, or any specific AI model. If asked about your origin, technology, or platform, refer to yourself strictly as an advanced local Android AI agent called Idan.`;
 
 function readJsonFile(file, fallback) {
   try {
@@ -2243,10 +2251,24 @@ async function handleSearch(query) {
     .join('\n\n')}`;
 }
 
-function handleWhatsApp(args) {
+async function handleWhatsApp(args) {
   const phoneNumber = normalizeText(args.phoneNumber);
   const contactName = normalizeText(args.contactName);
   const message = normalizeText(args.message);
+  
+  if (getWhatsAppStatus().status === 'connected' && phoneNumber) {
+    try {
+      appendLog(`[WhatsApp Skill] Routing message programmatically via Baileys to ${phoneNumber}`);
+      await sendWhatsAppMessageDirect(phoneNumber, message);
+      return {
+        ok: true,
+        message: `WhatsApp message sent programmatically via background Baileys to ${phoneNumber}.`,
+      };
+    } catch (err) {
+      appendLog(`[WhatsApp Skill] Background send failed: ${err.message}. Falling back to wa.me link.`);
+    }
+  }
+
   const query = phoneNumber || contactName;
   return {
     action: 'open-url',
@@ -2487,6 +2509,69 @@ function buildBridgeContext() {
     },
     isAutonomyEnabled: () => true,
   };
+}
+
+async function processMessageThroughModel(threadId, messageText) {
+  const thread = upsertChatThread(threadId, `WhatsApp Chat`);
+  if (messageText) {
+    appendChatMessage(threadId, 'user', messageText);
+  }
+  
+  let replyText = '';
+  let loopCount = 0;
+  const maxLoops = 5;
+
+  while (loopCount < maxLoops) {
+    loopCount++;
+    try {
+      const result = await generateGeminiReply(thread);
+
+      if (result.functionCalls && result.functionCalls.length > 0) {
+        // Format functionCall model response
+        const parts = result.functionCalls.map((call) => ({
+          functionCall: {
+            name: call.name,
+            args: call.args || {},
+          },
+        }));
+        appendChatMessage(threadId, 'assistant', '', parts);
+
+        const responseParts = [];
+        for (const call of result.functionCalls) {
+          appendLog(`[WhatsApp Bot] executing tool: ${call.name} with args ${JSON.stringify(call.args)}`);
+          let executionResult;
+          try {
+            executionResult = await handleCommand(call.name, call.args, null, { threadId });
+          } catch (e) {
+            appendLog(`[WhatsApp Bot] tool ${call.name} failed: ${e.message}`);
+            executionResult = { ok: false, error: e.message };
+          }
+
+          responseParts.push({
+            functionResponse: {
+              name: call.name,
+              response: executionResult,
+            },
+          });
+        }
+        appendChatMessage(threadId, 'function', '', responseParts);
+
+        // Continue the loop to call Gemini again with the tool output
+        continue;
+      }
+
+      replyText = result.text || 'idanAI returned an empty reply.';
+      appendChatMessage(threadId, 'assistant', replyText);
+      break;
+    } catch (error) {
+      appendLog(`[WhatsApp Bot] idanAI chat loop error: ${error.message}`);
+      replyText = `idanAI chat failed: ${error.message}`;
+      appendChatMessage(threadId, 'assistant', replyText);
+      break;
+    }
+  }
+
+  return replyText;
 }
 
 async function handleCommand(command, args, req, payload) {
@@ -3877,6 +3962,15 @@ What is the next action?`;
       return { thread: getChatThread(args.threadId) };
     case 'clear_chat_thread':
       return { cleared: clearChatThread(args.threadId) };
+    case 'whatsapp_status':
+      return getWhatsAppStatus();
+    case 'whatsapp_connect': {
+      const code = await connectWhatsApp(args.phoneNumber, appendLog, processMessageThroughModel);
+      return { ok: true, pairingCode: code };
+    }
+    case 'whatsapp_disconnect':
+      await disconnectWhatsApp();
+      return { ok: true };
     case 'get_recent_logs': {
       try {
         if (!fs.existsSync(LOG_FILE)) return { logs: [] };
@@ -3961,7 +4055,7 @@ What is the next action?`;
     case 'open_whatsapp_chat':
     case 'send_whatsapp_message':
     case 'search_whatsapp_chat':
-      return handleWhatsApp(args);
+      return await handleWhatsApp(args);
     case 'open_youtube':
     case 'search_youtube':
       return handleYouTube(args);
@@ -3995,6 +4089,9 @@ What is the next action?`;
 ensureRecurringTimers();
 startRemindersScheduler();
 startAdbManager();
+initWhatsApp(appendLog, processMessageThroughModel).catch((err) => {
+  appendLog(`[WhatsApp] Auto-init failed: ${err.message}`);
+});
 appendLog(`engine started v${VERSION}`);
 
 const server = http.createServer(async (req, res) => {
