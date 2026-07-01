@@ -97,18 +97,21 @@ Key Guidelines:
 2. Tool Execution & Multi-turn Loops:
    - You can call multiple tools in series (up to 5 loops per user response). Leverage this! Run a search, inspect the links, visit the best link, run a shell command if needed, and only present the final, fully-formed answer to the user once you have it.
    - ALWAYS inspect the output of function calls. If a tool returns an error, do not explain the failure and stop; instead, debug the issue, try a corrected argument, run a fallback command, or try a different approach.
-3. Termux Shell Access ('run_shell_command'):
-   - You have direct root/user shell access to the Termux Linux environment. Proactively use it for:
-     * File operations (list directories, view files, write scripts, grep text).
-     * System checks (storage, memory, battery, packages).
-     * API integration (using curl/wget to fetch JSON from open APIs like weather, finance, crypto, news).
-     * Writing and running custom Python or Node.js scripts to automate tasks, parse complex data, or scrape pages.
+3. Termux Shell & Host Android Integration ('run_shell_command'):
+   - You have direct, unrestricted shell access to the Termux Linux environment. By default, Termux runs in a non-rooted user-space, but if the device is rooted and root access ('su') is available, you are free to detect and leverage it for advanced tasks. You can run any command, install packages, write custom scripts, compile binaries, and execute any Linux tool needed.
+   - **Host Android Device Access via ADB (Android Debug Bridge)**:
+     * ADB wireless debugging is fully paired, authorized, and active. You can run any 'adb' or 'adb shell' command directly via 'run_shell_command'.
+     * Note that ADB runs as a standard ADB shell session. It has high-level administrative permissions (such as package management 'pm', system settings modification, simulation of user input/gestures via 'input tap/swipe', logcat/dumpsys diagnostics, launching intents, and reading/writing to '/sdcard/'). If the device is rooted and root is needed, you can escalate privileges via 'su' or 'adb root' (if supported).
+     * You MUST proactively use ADB to inspect, diagnose, automate, and interact with the host system. For example, you can query system properties ('getprop'), read/write settings, manage/query packages ('pm'), inspect logs/dumpsys ('logcat'/'dumpsys'), read/write to host storage ('/sdcard/'), simulate inputs/gestures ('input tap/swipe/keyevent'), launch intents/activities ('am start'), or run any other administrative ADB commands.
+     * Always exercise extreme caution when running commands as root ('su') or modifying system files to avoid breaking or corrupting the operating system.
+     * Do not treat any list of examples as a boundary or limitation; you are completely free to use any ADB features, command flags, or shell utilities that are available.
+     * Never wait for the user to explicitly ask you to use ADB; if there is a system check, configuration, diagnostic task, or automation that can be achieved via ADB, execute it immediately.
    - Always run commands with clean flags (e.g. -y for installations, silent flags for curl) and keep commands non-interactive.
 4. Separate Google Services:
    - Google App Login is used ONLY for your chat authorization.
    - Google Workspace Integration is used to run Gmail, Sheets, Docs, and Forms locally using local credentials. Do not confuse the two.
 5. Continuous Learning & Autosave Memory:
-   - You are equipped with a durable, long-term memory system. You MUST automatically and proactively save discoveries (e.g. shell command parameters, workarounds that succeeded, custom script designs), user choices/preferences, behaviors, facts about the user, and lessons from mistakes (e.g. what command failed, and how you resolved it) using the 'remember_user_fact' tool.
+   - You are equipped with a durable, long-term memory system. You MUST automatically and proactively save discoveries (e.g. shell command parameters, workarounds that succeeded, custom script designs, successful adb command patterns), user choices/preferences, behaviors, facts about the user, and lessons from mistakes (e.g. what command failed, and how you resolved it) using the 'remember_user_fact' tool.
    - Do NOT ask the user for permission to save these memories. Auto-save them in the background whenever you learn a new preference, solve a bug, or discover a useful trick.
    - The engine automatically retrieves recent memories and feeds them directly into your context. Use this context to avoid repeating errors, immediately apply past workarounds, and align with user preferences.
 6. Tone & Personality:
@@ -2350,6 +2353,108 @@ function safeEval(code, ctx) {
   return script.runInContext(sandbox, { timeout: 5000 });
 }
 
+async function dumpAndroidUI() {
+  try {
+    await executeShell('uiautomator dump /data/local/tmp/uidump.xml 2>/dev/null || adb shell uiautomator dump /data/local/tmp/uidump.xml').catch(() => {});
+    const res = await executeShell('cat /data/local/tmp/uidump.xml 2>/dev/null || adb shell cat /data/local/tmp/uidump.xml');
+    if (res.ok && res.stdout) {
+      return res.stdout;
+    }
+  } catch (err) {
+    appendLog(`dumpAndroidUI failed: ${err.message}`);
+  }
+  return '';
+}
+
+function findElementInXml(xml, searchText) {
+  const cleanSearch = searchText.toLowerCase().trim();
+  const nodeRegex = /<node[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"[^>]*>/g;
+  let match;
+  const candidates = [];
+  
+  while ((match = nodeRegex.exec(xml)) !== null) {
+    const nodeString = match[0];
+    const x1 = parseInt(match[1], 10);
+    const y1 = parseInt(match[2], 10);
+    const x2 = parseInt(match[3], 10);
+    const y2 = parseInt(match[4], 10);
+    
+    const textMatch = nodeString.match(/text="([^"]*)"/);
+    const descMatch = nodeString.match(/content-desc="([^"]*)"/);
+    const idMatch = nodeString.match(/resource-id="([^"]*)"/);
+    
+    const text = textMatch ? textMatch[1] : '';
+    const desc = descMatch ? descMatch[1] : '';
+    const resId = idMatch ? idMatch[1] : '';
+    
+    if (
+      text.toLowerCase().includes(cleanSearch) || 
+      desc.toLowerCase().includes(cleanSearch) || 
+      resId.toLowerCase().includes(cleanSearch)
+    ) {
+      candidates.push({
+        text,
+        desc,
+        resId,
+        x: Math.floor((x1 + x2) / 2),
+        y: Math.floor((y1 + y2) / 2),
+        score: (text.toLowerCase() === cleanSearch || desc.toLowerCase() === cleanSearch) ? 2 : 1
+      });
+    }
+  }
+  
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => b.score - a.score);
+  return candidates[0];
+}
+
+async function executeMacroStep(step) {
+  const action = step.action || step.type;
+  switch (action) {
+    case 'open_app': {
+      const pkg = step.packageName || step.package;
+      if (!pkg) throw new Error('open_app: packageName missing');
+      await executeShell(`monkey -p ${pkg} -c android.intent.category.LAUNCHER 1 2>&1`);
+      break;
+    }
+    case 'tap_text': {
+      const text = step.text;
+      if (!text) throw new Error('tap_text: text missing');
+      const xml = await dumpAndroidUI();
+      const el = findElementInXml(xml, text);
+      if (!el) throw new Error(`tap_text: element "${text}" not found on screen`);
+      await executeShell(`input tap ${el.x} ${el.y}`);
+      break;
+    }
+    case 'tap_xy': {
+      const x = step.x;
+      const y = step.y;
+      if (x == null || y == null) throw new Error('tap_xy: x or y missing');
+      await executeShell(`input tap ${x} ${y}`);
+      break;
+    }
+    case 'type_text': {
+      const text = step.text;
+      if (!text) throw new Error('type_text: text missing');
+      await executeShell(`input text "${text.replace(/"/g, '\\"')}"`);
+      break;
+    }
+    case 'press_key': {
+      const key = step.key || step.code;
+      if (!key) throw new Error('press_key: key missing');
+      await executeShell(`input keyevent ${key}`);
+      break;
+    }
+    case 'wait': {
+      const duration = Number(step.duration || step.durationMs || 1000);
+      await new Promise(resolve => setTimeout(resolve, duration));
+      break;
+    }
+    default:
+      throw new Error(`Unsupported macro step action: ${action}`);
+  }
+}
+
 function buildBridgeContext() {
   return {
     executeShell,
@@ -2366,6 +2471,21 @@ function buildBridgeContext() {
     healthCheck,
     visitWebsite,
     searchWeb: handleSearch,
+    dumpUI: dumpAndroidUI,
+    findElement: async (text) => {
+      const xml = await dumpAndroidUI();
+      return findElementInXml(xml, text);
+    },
+    boundsToCenter: (boundsStr) => {
+      const match = boundsStr.match(/\[(\d+),(\d+)\]\[(\d+),(\d+)\]/);
+      if (!match) return null;
+      const x1 = parseInt(match[1], 10);
+      const y1 = parseInt(match[2], 10);
+      const x2 = parseInt(match[3], 10);
+      const y2 = parseInt(match[4], 10);
+      return { x: Math.floor((x1 + x2) / 2), y: Math.floor((y1 + y2) / 2) };
+    },
+    isAutonomyEnabled: () => true,
   };
 }
 
@@ -2436,10 +2556,89 @@ async function handleCommand(command, args, req, payload) {
         return { apps: [] };
       }
     }
-    case 'open_app_by_package':
-      return { action: 'open-app', packageName: args.packageName };
-    case 'open_app_by_name':
+    case 'open_app_by_package': {
+      const pkg = args.packageName;
+      if (!pkg) return { ok: false, error: 'No package name provided' };
+      appendLog(`[App] Opening app by package via shell: ${pkg}`);
+      try {
+        const res = await executeShell(`monkey -p ${pkg} -c android.intent.category.LAUNCHER 1 2>&1`);
+        if (res.output && res.output.includes('monkey aborted')) {
+          await executeShell(`am start -n $(cmd package resolve-activity --brief ${pkg} | tail -n 1) 2>/dev/null`);
+        }
+        return { ok: true, message: `Opened app ${pkg}` };
+      } catch (err) {
+        return { action: 'open-app', packageName: pkg };
+      }
+    }
+    case 'open_app_by_name': {
+      const query = String(args.query || '').toLowerCase().trim();
+      if (!query) return { ok: false, error: 'No query provided' };
+      appendLog(`[App] Opening app by name: ${query}`);
+      try {
+        const commonApps = {
+          youtube: 'com.google.android.youtube',
+          yt: 'com.google.android.youtube',
+          whatsapp: 'com.whatsapp',
+          wa: 'com.whatsapp',
+          gmail: 'com.google.android.gm',
+          mail: 'com.google.android.gm',
+          chrome: 'com.android.chrome',
+          browser: 'com.android.chrome',
+          settings: 'com.android.settings',
+          phone: 'com.google.android.dialer',
+          dialer: 'com.google.android.dialer',
+          messages: 'com.google.android.apps.messaging',
+          sms: 'com.google.android.apps.messaging',
+          maps: 'com.google.android.apps.maps',
+          google: 'com.google.android.googlequicksearchbox',
+          camera: 'com.google.android.apps.camera',
+          photos: 'com.google.android.apps.photos',
+          calendar: 'com.google.android.calendar',
+          clock: 'com.google.android.deskclock',
+          calculator: 'com.google.android.calculator',
+          playstore: 'com.android.vending',
+          play: 'com.android.vending',
+          spotify: 'com.spotify.music',
+          twitter: 'com.twitter.android',
+          x: 'com.twitter.android',
+          instagram: 'com.instagram.android',
+          facebook: 'com.facebook.katana',
+          telegram: 'org.telegram.messenger',
+          slack: 'com.Slack',
+          discord: 'com.discord',
+          linkedin: 'com.linkedin.android',
+          drive: 'com.google.android.apps.docs',
+          docs: 'com.google.android.apps.docs',
+          sheets: 'com.google.android.apps.docs.sheets',
+          slides: 'com.google.android.apps.docs.slides',
+          meet: 'com.google.android.apps.meetings',
+          duolingo: 'com.duolingo',
+          netflix: 'com.netflix.mediaclient'
+        };
+        let pkg = commonApps[query.replace(/[^a-z0-9]/g, '')];
+        if (!pkg) {
+          const raw = await executeShell('pm list packages -f');
+          const apps = raw.split('\n')
+            .map((line) => {
+              const match = line.match(/^package:(.+)=([^=]+)$/);
+              return match ? match[2].trim() : null;
+            })
+            .filter(p => Boolean(p));
+          pkg = apps.find(p => p.toLowerCase().includes(query)) || null;
+        }
+        
+        if (pkg) {
+          const res = await executeShell(`monkey -p ${pkg} -c android.intent.category.LAUNCHER 1 2>&1`);
+          if (res.output && res.output.includes('monkey aborted')) {
+            await executeShell(`am start -n $(cmd package resolve-activity --brief ${pkg} | tail -n 1) 2>/dev/null`);
+          }
+          return { ok: true, message: `Opened app ${pkg}` };
+        }
+      } catch (err) {
+        appendLog(`[App] Failed to open app by name: ${err.message}`);
+      }
       return { action: 'open-app', query: args.query };
+    }
     case 'open_app_info':
       // Try shell first, fall back to app-side action
       await executeShell(`am start -a android.settings.APPLICATION_DETAILS_SETTINGS -d 'package:${String(args.packageName || '').replace(/'/g, '')}' 2>/dev/null`)
@@ -2611,30 +2810,181 @@ async function handleCommand(command, args, req, payload) {
 
     // Phone Macro aliases
     case 'list_macro_actions':
-      return { actions: [] };
+      return {
+        actions: ['open_app', 'tap_text', 'tap_xy', 'type_text', 'press_key', 'wait']
+      };
 
     // Self-Improving App Navigator aliases
     case 'open_demo_recorder_settings':
+      await executeShell('am start -a android.settings.ACCESSIBILITY_SETTINGS 2>/dev/null || adb shell am start -a android.settings.ACCESSIBILITY_SETTINGS').catch(() => {});
+      return { ok: true, message: 'Opened Accessibility Settings' };
     case 'open_demo_overlay_settings':
+      await executeShell('am start -a android.settings.action.MANAGE_OVERLAY_PERMISSION 2>/dev/null || adb shell am start -a android.settings.action.MANAGE_OVERLAY_PERMISSION').catch(() => {});
+      return { ok: true, message: 'Opened Draw-Over-Apps Overlay Settings' };
     case 'show_demo_overlay':
     case 'hide_demo_overlay':
     case 'start_app_demonstration':
     case 'finish_app_demonstration':
-    case 'observe_current_screen':
-    case 'capture_visible_text':
-    case 'connect_linkedin_profile':
-    case 'learn_app_procedure':
-    case 'list_learned_app_procedures':
-    case 'delete_learned_app_procedure':
-    case 'run_learned_app_procedure':
-      return { action: 'navigator-action', command, args };
+      return { ok: true, message: `${command} is handled dynamically by local environment.` };
+    case 'observe_current_screen': {
+      const xml = await dumpAndroidUI();
+      if (!xml) return { ok: false, error: 'Could not dump Android UI hierarchy. Ensure ADB is paired and awake.' };
+      const nodeRegex = /<node[^>]*text="([^"]*)"[^>]*content-desc="([^"]*)"[^>]*resource-id="([^"]*)"[^>]*class="([^"]*)"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"[^>]*>/g;
+      let match;
+      const elements = [];
+      while ((match = nodeRegex.exec(xml)) !== null) {
+        const text = match[1];
+        const desc = match[2];
+        const resId = match[3];
+        const cls = match[4].split('.').pop();
+        const x1 = parseInt(match[5], 10);
+        const y1 = parseInt(match[6], 10);
+        const x2 = parseInt(match[7], 10);
+        const y2 = parseInt(match[8], 10);
+        if (text || desc) {
+          elements.push({
+            text: text || undefined,
+            description: desc || undefined,
+            resourceId: resId || undefined,
+            type: cls,
+            center: [Math.floor((x1 + x2) / 2), Math.floor((y1 + y2) / 2)],
+            bounds: `[${x1},${y1}][${x2},${y2}]`
+          });
+        }
+      }
+      return { ok: true, elements: elements.slice(0, args.limit || 60) };
+    }
+    case 'capture_visible_text': {
+      let fullText = '';
+      const scrolls = Number(args.scrolls || 0);
+      const pkg = args.packageName;
+      const url = args.url;
+      const waitMs = Number(args.waitMs || 1800);
+      
+      if (pkg) {
+        await executeShell(`monkey -p ${pkg} -c android.intent.category.LAUNCHER 1 2>&1`).catch(() => {});
+        if (url) {
+          await executeShell(`am start -a android.intent.action.VIEW -d '${url}' 2>/dev/null`).catch(() => {});
+        }
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
+      
+      for (let i = 0; i <= scrolls; i++) {
+        const xml = await dumpAndroidUI();
+        if (xml) {
+          const textMatches = xml.match(/text="([^"]*)"/g) || [];
+          const descMatches = xml.match(/content-desc="([^"]*)"/g) || [];
+          const textList = textMatches.map(m => m.slice(6, -1)).filter(Boolean);
+          const descList = descMatches.map(m => m.slice(14, -1)).filter(Boolean);
+          const pageText = [...new Set([...textList, ...descList])].join(' | ');
+          fullText += `--- Screen ${i + 1} ---\n${pageText}\n\n`;
+        }
+        if (i < scrolls) {
+          await executeShell('input swipe 500 1500 500 500 500').catch(() => {});
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+        }
+      }
+      
+      if (args.rememberKey) {
+        rememberRecord({ kind: 'text_capture', key: args.rememberKey, value: fullText });
+      }
+      
+      return { ok: true, capturedText: fullText };
+    }
+    case 'connect_linkedin_profile': {
+      const url = args.url;
+      const scrolls = args.scrolls || 2;
+      const rememberKey = args.rememberKey || 'linkedin:profile:self';
+      const captureResult = await handleCommand('capture_visible_text', {
+        packageName: 'com.linkedin.android',
+        url,
+        scrolls,
+        rememberKey
+      }, req, payload);
+      return { ok: true, message: `LinkedIn profile connected and saved under key ${rememberKey}.`, captureResult };
+    }
+    case 'learn_app_procedure': {
+      const record = {
+        kind: 'procedure',
+        key: args.name,
+        value: {
+          name: args.name,
+          packageName: args.packageName,
+          goal: args.goal,
+          steps: args.steps,
+          successSignals: args.successSignals,
+          failureSignals: args.failureSignals,
+          confidence: args.confidence
+        }
+      };
+      const saved = rememberRecord(record);
+      return { ok: true, saved };
+    }
+    case 'list_learned_app_procedures': {
+      const query = args.query || args.packageName || '';
+      const limit = args.limit || 20;
+      const results = searchMemory(query, limit, 'procedure');
+      return { ok: true, procedures: results.map(r => r.value) };
+    }
+    case 'delete_learned_app_procedure': {
+      const name = args.name;
+      const count = forgetMemoryByKey('procedure', name);
+      return { ok: true, deletedCount: count };
+    }
+    case 'run_learned_app_procedure': {
+      const name = args.name;
+      const memoryMatches = memory.filter(m => m.kind === 'procedure' && m.key === name);
+      if (memoryMatches.length === 0) {
+        return { ok: false, error: `Procedure "${name}" not found in memory.` };
+      }
+      const procedure = memoryMatches[0];
+      const steps = procedure.value ? procedure.value.steps : [];
+      const results = [];
+      for (let i = 0; i < steps.length; i++) {
+        const step = steps[i];
+        try {
+          await executeMacroStep(step);
+          results.push(`Step ${i + 1} (${step.action || step.type}): Success`);
+        } catch (err) {
+          results.push(`Step ${i + 1} (${step.action || step.type}): Failed: ${err.message}`);
+          return { ok: false, error: err.message, stepsRun: results };
+        }
+      }
+      return { ok: true, stepsRun: results };
+    }
 
     // YouTube control aliases
     case 'youtube_play_pause':
-    case 'youtube_share_current':
-    case 'youtube_comment_current':
+      await executeShell('input keyevent 85 2>/dev/null || adb shell input keyevent 85').catch(() => {});
+      return { ok: true, message: 'Toggled YouTube Play/Pause' };
+    case 'youtube_share_current': {
+      const xml = await dumpAndroidUI();
+      const el = findElementInXml(xml, 'Share');
+      if (el) {
+        await executeShell(`input tap ${el.x} ${el.y}`).catch(() => {});
+        return { ok: true, message: 'Clicked YouTube Share button' };
+      }
+      return { ok: false, error: 'Share button not found on screen' };
+    }
+    case 'youtube_comment_current': {
+      const commentText = args.text || args.comment || '';
+      const xml = await dumpAndroidUI();
+      const el = findElementInXml(xml, 'Add a comment');
+      if (el) {
+        await executeShell(`input tap ${el.x} ${el.y}`).catch(() => {});
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        await executeShell(`input text "${commentText.replace(/"/g, '\\"')}"`).catch(() => {});
+        const postXml = await dumpAndroidUI();
+        const postEl = findElementInXml(postXml, 'Post') || findElementInXml(postXml, 'Send') || findElementInXml(postXml, 'com.google.android.youtube:id/send_button');
+        if (postEl) {
+          await executeShell(`input tap ${postEl.x} ${postEl.y}`).catch(() => {});
+          return { ok: true, message: 'Posted comment successfully' };
+        }
+      }
+      return { ok: false, error: 'Could not post comment on YouTube screen' };
+    }
     case 'youtube_observe_screen':
-      return { action: 'youtube-action', command, args };
+      return handleCommand('observe_current_screen', args, req, payload);
 
     case 'health':
     case 'status':
@@ -3527,6 +3877,16 @@ What is the next action?`;
       return { thread: getChatThread(args.threadId) };
     case 'clear_chat_thread':
       return { cleared: clearChatThread(args.threadId) };
+    case 'get_recent_logs': {
+      try {
+        if (!fs.existsSync(LOG_FILE)) return { logs: [] };
+        const content = fs.readFileSync(LOG_FILE, 'utf8');
+        const lines = content.split('\n').map(l => l.trim()).filter(Boolean);
+        return { logs: lines.slice(-10) };
+      } catch (err) {
+        return { logs: [`Error reading logs: ${err.message}`] };
+      }
+    }
     case 'chat': {
       const threadId = normalizeThreadId(args.threadId);
       const messageText = normalizeText(args.message);
