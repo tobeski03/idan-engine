@@ -100,27 +100,25 @@ function bindEvents(socketInstance, authDir, saveCreds, appendLog, processMessag
       const jid = msg.key.remoteJid;
       if (!jid || !jid.endsWith('@s.whatsapp.net')) continue; // Skip groups/non-individual
 
-      let messageContent = msg.message;
-      if (messageContent?.ephemeralMessage) {
-        messageContent = messageContent.ephemeralMessage.message;
-      }
-      if (messageContent?.viewOnceMessage) {
-        messageContent = messageContent.viewOnceMessage.message;
-      }
-      if (messageContent?.viewOnceMessageV2) {
-        messageContent = messageContent.viewOnceMessageV2.message;
-      }
-      if (messageContent?.documentWithCaptionMessage) {
-        messageContent = messageContent.documentWithCaptionMessage.message;
+      // Log the keys of the message so we know what structure it has if it skips
+      appendLog(`[WhatsApp] Incoming message keys: ${Object.keys(msg.message || {}).join(', ')}`);
+
+      const messageContent = unwrapMessage(msg.message);
+      if (!messageContent) {
+        appendLog(`[WhatsApp] Warning: unwrapped messageContent is empty`);
+        continue;
       }
 
-      const messageText = messageContent?.conversation || 
-                          messageContent?.extendedTextMessage?.text || 
-                          messageContent?.imageMessage?.caption || 
-                          messageContent?.videoMessage?.caption ||
-                          messageContent?.documentMessage?.caption;
+      const messageText = messageContent.conversation || 
+                          messageContent.extendedTextMessage?.text || 
+                          messageContent.imageMessage?.caption || 
+                          messageContent.videoMessage?.caption ||
+                          messageContent.documentMessage?.caption;
 
-      if (!messageText) continue;
+      if (!messageText) {
+        appendLog(`[WhatsApp] Skip message: messageText is empty (keys: ${Object.keys(messageContent).join(', ')})`);
+        continue;
+      }
 
       const isSelf = msg.key.fromMe;
       // Allow testing from self if message starts with !idan or /idan
@@ -253,6 +251,26 @@ async function connectWhatsApp(phoneNumber, appendLog, processMessageThroughMode
     whatsappState.pairingCode = null;
     return null;
   }
+}
+
+function unwrapMessage(message) {
+  if (!message) return null;
+  if (message.deviceSentMessage?.message) {
+    return unwrapMessage(message.deviceSentMessage.message);
+  }
+  if (message.ephemeralMessage?.message) {
+    return unwrapMessage(message.ephemeralMessage.message);
+  }
+  if (message.viewOnceMessage?.message) {
+    return unwrapMessage(message.viewOnceMessage.message);
+  }
+  if (message.viewOnceMessageV2?.message) {
+    return unwrapMessage(message.viewOnceMessageV2.message);
+  }
+  if (message.documentWithCaptionMessage?.message) {
+    return unwrapMessage(message.documentWithCaptionMessage.message);
+  }
+  return message;
 }
 
 module.exports = {
