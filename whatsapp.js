@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, Browsers } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const path = require('path');
 const fs = require('fs');
@@ -94,9 +94,9 @@ function bindEvents(socketInstance, authDir, saveCreds, appendLog, processMessag
   });
 
   socketInstance.ev.on('messages.upsert', async (m) => {
+    appendLog(`[WhatsApp] messages.upsert event: type=${m.type}, count=${m.messages?.length || 0}`);
     if (m.type !== 'notify') return;
     for (const msg of m.messages) {
-      if (msg.key.fromMe) continue; // Skip self messages
       const jid = msg.key.remoteJid;
       if (!jid || !jid.endsWith('@s.whatsapp.net')) continue; // Skip groups/non-individual
 
@@ -122,12 +122,20 @@ function bindEvents(socketInstance, authDir, saveCreds, appendLog, processMessag
 
       if (!messageText) continue;
 
-      appendLog(`[WhatsApp] Received message from ${jid}: ${messageText}`);
+      const isSelf = msg.key.fromMe;
+      // Allow testing from self if message starts with !idan or /idan
+      const isSelfTest = isSelf && (messageText.startsWith('!idan') || messageText.startsWith('/idan'));
+      
+      if (isSelf && !isSelfTest) continue; // Skip self messages unless it's a test command
+
+      const cleanMessageText = isSelfTest ? messageText.replace(/^([!\/]idan\s*)/i, '') : messageText;
+
+      appendLog(`[WhatsApp] Received message from ${jid} (isSelf=${isSelf}, isSelfTest=${isSelfTest}): ${cleanMessageText}`);
 
       // Run it through the local Gemini model!
       const threadId = `whatsapp_${jid.split('@')[0]}`;
       try {
-        const reply = await processMessageThroughModel(threadId, messageText);
+        const reply = await processMessageThroughModel(threadId, cleanMessageText);
         if (reply) {
           appendLog(`[WhatsApp] Replying to ${jid}: ${reply}`);
           await socketInstance.sendMessage(jid, { text: reply });
@@ -181,7 +189,7 @@ async function initWhatsApp(appendLog, processMessageThroughModel) {
       auth: state,
       logger: pino({ level: 'silent' }),
       printQRInTerminal: false,
-      browser: ['Ubuntu', 'Chrome', '20.0.04'],
+      browser: Browsers.ubuntu('Chrome'),
     });
 
     bindEvents(sock, authDir, saveCreds, appendLog, processMessageThroughModel);
@@ -222,7 +230,7 @@ async function connectWhatsApp(phoneNumber, appendLog, processMessageThroughMode
     auth: state,
     logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
-    browser: ['Ubuntu', 'Chrome', '20.0.04'],
+    browser: Browsers.ubuntu('Chrome'),
   });
 
   bindEvents(sock, authDir, saveCreds, appendLog, processMessageThroughModel);
