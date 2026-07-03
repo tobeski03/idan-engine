@@ -46,12 +46,10 @@ const VERSION = process.env.IDAN_ENGINE_VERSION || '0.2.0';
 // ── Runtime config — populated by the APK during pairing, never written to disk
 // Nothing here is hardcoded. The APK holds company values and injects them
 // over the local IPC handshake. On engine restart the APK re-sends on reconnect.
-// Fallback values are hardcoded here so the WhatsApp bot can still call Gemini
-// after a Termux restart before the Android app re-pairs.
 let engineConfig = {
-  backendApiBaseUrl: 'https://idan-backend.vercel.app', // fallback — APK overrides at pair time
-  geminiModel: 'gemini-2.5-flash',                     // fallback — APK overrides at pair time
-  googleClientId: null,                                // injected by APK at pair time
+  backendApiBaseUrl: null, // injected by APK at pair time
+  geminiModel: null,       // injected by APK at pair time
+  googleClientId: null,    // injected by APK at pair time
 };
 
 // ── License system ───────────────────────────────────────────────────────
