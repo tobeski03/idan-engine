@@ -24,7 +24,7 @@ async function cleanAuthFolder() {
   }
 }
 
-async function disconnectWhatsApp() {
+async function disconnectWhatsApp(wipeAuth = false) {
   if (sock) {
     try {
       sock.ev.removeAllListeners('connection.update');
@@ -39,7 +39,10 @@ async function disconnectWhatsApp() {
   whatsappState.status = 'disconnected';
   whatsappState.pairingCode = null;
   whatsappState.phoneNumber = null;
-  await cleanAuthFolder();
+  // Only wipe auth folder when explicitly logging out (status 403 / user request)
+  if (wipeAuth) {
+    await cleanAuthFolder();
+  }
 }
 
 function getWhatsAppStatus() {
@@ -55,6 +58,21 @@ async function sendWhatsAppMessageDirect(phoneNumber, message) {
   await sock.sendMessage(jid, { text: message });
   return { ok: true, message: `Message sent programmatically to ${phoneNumber}` };
 }
+
+// Protocol/control message types that carry no user-readable content.
+// These appear naturally after Bad MAC recovery (session re-keying) and must
+// be silently ignored rather than treated as empty text messages.
+const PROTOCOL_MESSAGE_KEYS = [
+  'senderKeyDistributionMessage',
+  'protocolMessage',
+  'reactionMessage',
+  'pollUpdateMessage',
+  'pollCreationMessage',
+  'keepInChatMessage',
+  'messageContextInfo',
+  'callLogMesssage', // typo preserved from WA proto
+  'callLogMessage',
+];
 
 // Internal function to bind all Baileys event listeners
 function bindEvents(socketInstance, authDir, saveCreds, appendLog, processMessageThroughModel) {
@@ -80,6 +98,7 @@ function bindEvents(socketInstance, authDir, saveCreds, appendLog, processMessag
           }
         }, 5000);
       } else {
+        // Logged out — wipe auth so user can re-pair cleanly
         whatsappState.status = 'disconnected';
         whatsappState.pairingCode = null;
         whatsappState.phoneNumber = null;
@@ -94,66 +113,133 @@ function bindEvents(socketInstance, authDir, saveCreds, appendLog, processMessag
   });
 
   socketInstance.ev.on('messages.upsert', async (m) => {
-    appendLog(`[WhatsApp] messages.upsert event: type=${m.type}, count=${m.messages?.length || 0}`);
-    if (m.type !== 'notify') return;
+    appendLog(`[WhatsApp] ── messages.upsert fired: type=${m.type}, count=${m.messages?.length || 0}`);
+
+    if (m.type !== 'notify') {
+      appendLog(`[WhatsApp] Skipping upsert — type is '${m.type}', not 'notify' (likely history sync)`);
+      return;
+    }
+
     for (const msg of m.messages) {
       const jid = msg.key.remoteJid;
-      if (!jid || !jid.endsWith('@s.whatsapp.net')) continue; // Skip groups/non-individual
+      const msgId = msg.key.id || 'unknown';
 
-      // Log the keys of the message so we know what structure it has if it skips
-      appendLog(`[WhatsApp] Incoming message keys: ${Object.keys(msg.message || {}).join(', ')}`);
+      appendLog(`[WhatsApp] Message [${msgId}]: jid=${jid}, fromMe=${msg.key.fromMe}`);
+
+      // ── Step 1: JID filter (1-on-1 chats only) ─────────────────────────
+      if (!jid) {
+        appendLog(`[WhatsApp] [${msgId}] SKIP — remoteJid is null/empty`);
+        continue;
+      }
+      if (!jid.endsWith('@s.whatsapp.net')) {
+        appendLog(`[WhatsApp] [${msgId}] SKIP — jid '${jid}' is not a 1-on-1 chat (group/broadcast/status)`);
+        continue;
+      }
+
+      // ── Step 2: Unwrap message structure ───────────────────────────────
+      const rawKeys = Object.keys(msg.message || {}).join(', ') || 'none';
+      appendLog(`[WhatsApp] [${msgId}] Raw message keys: ${rawKeys}`);
 
       const messageContent = unwrapMessage(msg.message);
       if (!messageContent) {
-        appendLog(`[WhatsApp] Warning: unwrapped messageContent is empty`);
+        appendLog(`[WhatsApp] [${msgId}] SKIP — unwrapped messageContent is null/empty`);
         continue;
       }
 
-      const messageText = messageContent.conversation || 
-                          messageContent.extendedTextMessage?.text || 
-                          messageContent.imageMessage?.caption || 
-                          messageContent.videoMessage?.caption ||
-                          messageContent.documentMessage?.caption;
+      const unwrappedKeys = Object.keys(messageContent).join(', ');
+      appendLog(`[WhatsApp] [${msgId}] Unwrapped keys: ${unwrappedKeys}`);
+
+      // ── Step 3: Protocol/control message filter ─────────────────────────
+      // These are Signal session management frames (key distribution, reactions,
+      // poll updates etc.). They arrive naturally after Bad MAC recovery and must
+      // be silently discarded — they are never user messages.
+      const protocolKeysPresent = PROTOCOL_MESSAGE_KEYS.filter((k) => messageContent[k]);
+      const isOnlyProtocol =
+        protocolKeysPresent.length > 0 &&
+        Object.keys(messageContent).every(
+          (k) => PROTOCOL_MESSAGE_KEYS.includes(k) || k === 'messageContextInfo'
+        );
+      if (isOnlyProtocol) {
+        appendLog(`[WhatsApp] [${msgId}] SKIP — protocol/control message (${protocolKeysPresent.join(', ')})`);
+        continue;
+      }
+
+      // ── Step 4: Extract text ────────────────────────────────────────────
+      const messageText =
+        messageContent.conversation ||
+        messageContent.extendedTextMessage?.text ||
+        messageContent.imageMessage?.caption ||
+        messageContent.videoMessage?.caption ||
+        messageContent.documentMessage?.caption;
 
       if (!messageText) {
-        appendLog(`[WhatsApp] Skip message: messageText is empty (keys: ${Object.keys(messageContent).join(', ')})`);
+        appendLog(`[WhatsApp] [${msgId}] SKIP — no extractable text found (unwrapped keys: ${unwrappedKeys})`);
         continue;
       }
 
+      appendLog(`[WhatsApp] [${msgId}] Extracted text (${messageText.length} chars): "${messageText.slice(0, 100)}${messageText.length > 100 ? '...' : ''}"`);
+
+      // ── Step 5: fromMe filter ───────────────────────────────────────────
       const isSelf = msg.key.fromMe;
       // Allow testing from self if message starts with !idan or /idan
       const isSelfTest = isSelf && (messageText.startsWith('!idan') || messageText.startsWith('/idan'));
-      
-      if (isSelf && !isSelfTest) continue; // Skip self messages unless it's a test command
+
+      if (isSelf && !isSelfTest) {
+        appendLog(`[WhatsApp] [${msgId}] SKIP — own message (fromMe=true) and not a test command`);
+        continue;
+      }
 
       const cleanMessageText = isSelfTest ? messageText.replace(/^([!\/]idan\s*)/i, '') : messageText;
+      appendLog(`[WhatsApp] [${msgId}] PASS — from=${jid}, isSelf=${isSelf}, isSelfTest=${isSelfTest} — handing off to bot`);
 
-      appendLog(`[WhatsApp] Received message from ${jid} (isSelf=${isSelf}, isSelfTest=${isSelfTest}): ${cleanMessageText}`);
-
-      // Run it through the local Gemini model!
+      // ── Step 6: Process through model ──────────────────────────────────
       const threadId = `whatsapp_${jid.split('@')[0]}`;
       try {
         const reply = await processMessageThroughModel(threadId, cleanMessageText);
         if (reply) {
-          appendLog(`[WhatsApp] Replying to ${jid}: ${reply}`);
+          appendLog(`[WhatsApp] [${msgId}] Sending reply to ${jid} (${reply.length} chars)`);
           await socketInstance.sendMessage(jid, { text: reply });
+          appendLog(`[WhatsApp] [${msgId}] Reply sent OK`);
+        } else {
+          appendLog(`[WhatsApp] [${msgId}] processMessageThroughModel returned null/empty — no reply sent`);
         }
       } catch (err) {
-        appendLog(`[WhatsApp] Error generating response for ${jid}: ${err.message}`);
+        appendLog(`[WhatsApp] [${msgId}] Error processing/sending reply for ${jid}: ${err.message}`);
         try {
           await socketInstance.sendMessage(jid, { text: `[Idan AI Error]: ${err.message}` });
         } catch (sendErr) {
-          // ignore send error
+          appendLog(`[WhatsApp] [${msgId}] Also failed to send error reply: ${sendErr.message}`);
         }
       }
     }
   });
 }
 
+// Shared socket options used by both initWhatsApp and connectWhatsApp.
+// getMessage is critical: without it Baileys cannot respond to WhatsApp's
+// decryption retry requests, which causes "Bad MAC" errors and broken sessions.
+function makeSocketOptions(version, state) {
+  return {
+    version,
+    auth: state,
+    logger: pino({ level: 'silent' }),
+    printQRInTerminal: false,
+    // macOS fingerprint causes fewer aggressive key-rotation cycles than ubuntu/Chrome
+    browser: Browsers.macOS('Desktop'),
+    // Required to honour WhatsApp message-retry requests and prevent Bad MAC
+    getMessage: async (key) => {
+      // We don't maintain a full message store, but returning a placeholder is
+      // enough to satisfy the retry handshake and keep sessions healthy.
+      return { conversation: '' };
+    },
+  };
+}
+
 async function initWhatsApp(appendLog, processMessageThroughModel) {
   const authDir = path.join(__dirname, 'whatsapp-auth');
   const credsFile = path.join(authDir, 'creds.json');
   if (!fs.existsSync(credsFile)) {
+    appendLog('[WhatsApp] Auto-init skipped — no credentials found (whatsapp-auth/creds.json missing). Pair via the app first.');
     return;
   }
 
@@ -182,13 +268,7 @@ async function initWhatsApp(appendLog, processMessageThroughModel) {
       appendLog(`[WhatsApp] Failed to fetch latest version: ${err.message}`);
     }
 
-    sock = makeWASocket({
-      version,
-      auth: state,
-      logger: pino({ level: 'silent' }),
-      printQRInTerminal: false,
-      browser: Browsers.ubuntu('Chrome'),
-    });
+    sock = makeWASocket(makeSocketOptions(version, state));
 
     bindEvents(sock, authDir, saveCreds, appendLog, processMessageThroughModel);
   } catch (err) {
@@ -203,8 +283,11 @@ async function connectWhatsApp(phoneNumber, appendLog, processMessageThroughMode
     throw new Error('Invalid phone number format');
   }
 
-  // Wreplace any existing connection
-  await disconnectWhatsApp();
+  // Close the existing socket WITHOUT wiping credentials so creds survive
+  await disconnectWhatsApp(false);
+
+  // Wipe old auth folder explicitly so we start fresh pairing
+  await cleanAuthFolder();
 
   whatsappState.status = 'connecting';
   whatsappState.phoneNumber = cleanNumber;
@@ -223,13 +306,7 @@ async function connectWhatsApp(phoneNumber, appendLog, processMessageThroughMode
     appendLog(`[WhatsApp] Failed to fetch latest version: ${err.message}`);
   }
 
-  sock = makeWASocket({
-    version,
-    auth: state,
-    logger: pino({ level: 'silent' }),
-    printQRInTerminal: false,
-    browser: Browsers.ubuntu('Chrome'),
-  });
+  sock = makeWASocket(makeSocketOptions(version, state));
 
   bindEvents(sock, authDir, saveCreds, appendLog, processMessageThroughModel);
 

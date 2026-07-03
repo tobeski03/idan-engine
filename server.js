@@ -2542,25 +2542,61 @@ function buildBridgeContext() {
 }
 
 async function processMessageThroughModel(threadId, messageText) {
+  appendLog(`[WhatsApp Bot] processMessageThroughModel called — thread=${threadId}, text="${(messageText || '').slice(0, 80)}"`);
+
   if (!whatsappConfig.enabled) {
-    appendLog(`[WhatsApp Bot] Bot is disabled, ignoring incoming message on thread ${threadId}`);
+    appendLog(`[WhatsApp Bot] Bot is disabled — ignoring message on thread ${threadId}`);
     return null;
   }
+
+  // ── Graceful fallback: engine not fully paired with the Idan app yet ──────
+  const apiBaseUrl = getBackendApiBaseUrl();
+  if (!apiBaseUrl) {
+    const fallback =
+      '🤖 *Idan AI is warming up.*\n\n' +
+      'The engine is running but the Idan app hasn\'t completed its pairing handshake yet, so the AI brain is temporarily offline.\n\n' +
+      'Please open the Idan app and let it reconnect — replies will be fully powered once pairing is done. 🔗';
+    appendLog(`[WhatsApp Bot] No apiBaseUrl (APK not paired) — sending fallback reply to ${threadId}`);
+    const thread = upsertChatThread(threadId, 'WhatsApp Chat');
+    if (messageText) appendChatMessage(threadId, 'user', messageText);
+    appendChatMessage(threadId, 'assistant', fallback);
+    return fallback;
+  }
+
+  // ── Graceful fallback: app Google auth not present ────────────────────────
+  const appAuthStatus = getAppAuthStatus();
+  if (!appAuthStatus.connected) {
+    const fallback =
+      '🔐 *Idan AI needs authentication.*\n\n' +
+      'The engine is running but Google login hasn\'t been completed in the Idan app yet.\n\n' +
+      'Please open the Idan app and log in with Google to activate the AI. 🚀';
+    appendLog(`[WhatsApp Bot] App auth not connected — sending fallback reply to ${threadId}`);
+    const thread = upsertChatThread(threadId, 'WhatsApp Chat');
+    if (messageText) appendChatMessage(threadId, 'user', messageText);
+    appendChatMessage(threadId, 'assistant', fallback);
+    return fallback;
+  }
+
   const thread = upsertChatThread(threadId, `WhatsApp Chat`);
   if (messageText) {
     appendChatMessage(threadId, 'user', messageText);
   }
-  
+
+  appendLog(`[WhatsApp Bot] Entering Gemini loop (apiBaseUrl=${apiBaseUrl}, model=${engineConfig.geminiModel || 'gemini-2.5-flash'})`);
+
   let replyText = '';
   let loopCount = 0;
   const maxLoops = 5;
 
   while (loopCount < maxLoops) {
     loopCount++;
+    appendLog(`[WhatsApp Bot] Gemini loop iteration ${loopCount}/${maxLoops}`);
     try {
       const result = await generateGeminiReply(thread);
 
       if (result.functionCalls && result.functionCalls.length > 0) {
+        appendLog(`[WhatsApp Bot] Gemini requested ${result.functionCalls.length} tool call(s): ${result.functionCalls.map(c => c.name).join(', ')}`);
+
         // Format functionCall model response
         const parts = result.functionCalls.map((call) => ({
           functionCall: {
@@ -2572,12 +2608,13 @@ async function processMessageThroughModel(threadId, messageText) {
 
         const responseParts = [];
         for (const call of result.functionCalls) {
-          appendLog(`[WhatsApp Bot] executing tool: ${call.name} with args ${JSON.stringify(call.args)}`);
+          appendLog(`[WhatsApp Bot] Executing tool: ${call.name} — args: ${JSON.stringify(call.args)}`);
           let executionResult;
           try {
             executionResult = await handleCommand(call.name, call.args, null, { threadId });
+            appendLog(`[WhatsApp Bot] Tool ${call.name} succeeded`);
           } catch (e) {
-            appendLog(`[WhatsApp Bot] tool ${call.name} failed: ${e.message}`);
+            appendLog(`[WhatsApp Bot] Tool ${call.name} failed: ${e.message}`);
             executionResult = { ok: false, error: e.message };
           }
 
@@ -2595,16 +2632,22 @@ async function processMessageThroughModel(threadId, messageText) {
       }
 
       replyText = result.text || 'idanAI returned an empty reply.';
+      appendLog(`[WhatsApp Bot] Gemini final reply (${replyText.length} chars): "${replyText.slice(0, 120)}${replyText.length > 120 ? '...' : ''}"`);
       appendChatMessage(threadId, 'assistant', replyText);
       break;
     } catch (error) {
-      appendLog(`[WhatsApp Bot] idanAI chat loop error: ${error.message}`);
+      appendLog(`[WhatsApp Bot] Gemini loop error on iteration ${loopCount}: ${error.message}`);
       replyText = `idanAI chat failed: ${error.message}`;
       appendChatMessage(threadId, 'assistant', replyText);
       break;
     }
   }
 
+  if (loopCount >= maxLoops) {
+    appendLog(`[WhatsApp Bot] Warning: reached max tool loop iterations (${maxLoops}) without a final text reply`);
+  }
+
+  appendLog(`[WhatsApp Bot] processMessageThroughModel done — returning reply to ${threadId}`);
   return replyText;
 }
 
@@ -4015,7 +4058,7 @@ What is the next action?`;
       return { ok: true, pairingCode: code };
     }
     case 'whatsapp_disconnect':
-      await disconnectWhatsApp();
+      await disconnectWhatsApp(true); // wipe auth on explicit user disconnect
       return { ok: true };
     case 'get_recent_logs': {
       try {
