@@ -969,8 +969,10 @@ async function fetchGeminiWithRetry(url, options, maxRetries = 3, delayMs = 1500
   let attempt = 0;
   while (attempt < maxRetries) {
     attempt++;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000); // 20s request timeout
     try {
-      const response = await fetch(url, options);
+      const response = await fetch(url, { ...options, signal: controller.signal });
       const is503 = response.status === 503;
 
       let json = {};
@@ -979,6 +981,7 @@ async function fetchGeminiWithRetry(url, options, maxRetries = 3, delayMs = 1500
       } catch (e) {
         // ignore JSON parse error
       }
+      clearTimeout(timeout);
 
       const errorMsg = json?.error?.message || json?.error || '';
       const isServiceUnavailable = is503 ||
@@ -999,19 +1002,21 @@ async function fetchGeminiWithRetry(url, options, maxRetries = 3, delayMs = 1500
 
       return { response, json };
     } catch (err) {
-      const isNetworkOr503 = err.message.toLowerCase().includes('503') ||
-        err.message.toLowerCase().includes('service unavailable') ||
-        err.message.toLowerCase().includes('overloaded') ||
-        err.message.toLowerCase().includes('fetch failed') ||
-        err.message.toLowerCase().includes('socket') ||
-        err.message.toLowerCase().includes('timeout');
+      clearTimeout(timeout);
+      const errMsg = err.name === 'AbortError' ? 'Request timed out after 20s' : err.message;
+      const isNetworkOr503 = errMsg.toLowerCase().includes('503') ||
+        errMsg.toLowerCase().includes('service unavailable') ||
+        errMsg.toLowerCase().includes('overloaded') ||
+        errMsg.toLowerCase().includes('fetch failed') ||
+        errMsg.toLowerCase().includes('socket') ||
+        errMsg.toLowerCase().includes('timeout');
 
       if (isNetworkOr503 && attempt < maxRetries) {
-        appendLog(`[Gemini API] Attempt ${attempt} threw error: ${err.message}. Retrying in ${delayMs}ms...`);
+        appendLog(`[Gemini API] Attempt ${attempt} threw error: ${errMsg}. Retrying in ${delayMs}ms...`);
         await new Promise(resolve => setTimeout(resolve, delayMs));
         continue;
       }
-      throw err;
+      throw new Error(errMsg);
     }
   }
 }
