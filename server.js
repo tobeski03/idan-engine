@@ -4137,7 +4137,9 @@ appendLog(`engine started v${VERSION}`);
 
 const server = http.createServer(async (req, res) => {
   try {
-    appendLog(`request: ${req.method} ${req.url}`); // Log ALL requests
+    if (req.url !== '/health' && req.url !== '/status') {
+      appendLog(`request: ${req.method} ${req.url}`); // Log requests (skip health/status polling)
+    }
 
     if (req.method === 'GET' && req.url === '/health') {
       return json(res, 200, snapshot());
@@ -4271,7 +4273,9 @@ const server = http.createServer(async (req, res) => {
       const command = payload.command;
       const args = payload.args || {};
 
-      appendLog(`received RPC: ${command}`); // Log incoming requests
+      if (command !== 'get_recent_logs' && command !== 'whatsapp_status' && command !== 'get_whatsapp_config' && command !== 'list_connectors') {
+        appendLog(`received RPC: ${command}`); // Log incoming requests
+      }
 
       if (command !== 'health' && command !== 'status' && command !== 'version' && command !== 'pair') {
         if (!requireAuth(req, res, payload)) return;
