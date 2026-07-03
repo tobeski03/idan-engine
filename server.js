@@ -79,6 +79,7 @@ const APP_AUTH_FILE = path.join(DATA_DIR, 'app-auth.json');
 const EMAIL_WATCH_FILE = path.join(DATA_DIR, 'email-watch.json');
 const CHATS_FILE = path.join(DATA_DIR, 'chats.json');
 const LOG_FILE = path.join(DATA_DIR, 'engine.log');
+const WHATSAPP_CONFIG_FILE = path.join(DATA_DIR, 'whatsapp-config.json');
 
 const startedAt = Date.now();
 const jobs = new Map();
@@ -187,6 +188,7 @@ let appAuth = readJsonFile(APP_AUTH_FILE, {
 });
 let emailWatchRules = readJsonFile(EMAIL_WATCH_FILE, []);
 let chats = readJsonFile(CHATS_FILE, { threads: {} });
+let whatsappConfig = readJsonFile(WHATSAPP_CONFIG_FILE, { instructions: '', enabled: true });
 
 const SKILLS_DIR = path.join(DATA_DIR, 'skills');
 const CUSTOM_SKILLS_DIR = path.join(SKILLS_DIR, 'custom');
@@ -435,6 +437,7 @@ function saveAll() {
   writeJsonFile(APP_AUTH_FILE, appAuth);
   writeJsonFile(EMAIL_WATCH_FILE, emailWatchRules);
   writeJsonFile(CHATS_FILE, chats);
+  writeJsonFile(WHATSAPP_CONFIG_FILE, whatsappConfig);
 }
 
 function normalizeThreadId(value) {
@@ -1037,6 +1040,15 @@ async function generateGeminiReply(thread) {
 [Remembered Learnings, User Choices & Facts]
 ${recentMemories}`;
 
+  let systemInstruction = `${CHAT_SYSTEM_PROMPT}${statusPrompt}`;
+  if (thread && thread.id && thread.id.startsWith('whatsapp_')) {
+    systemInstruction = `${CHAT_SYSTEM_PROMPT}`;
+    if (whatsappConfig.instructions) {
+      systemInstruction += `\n\n[CRITICAL WHATSAPP BOT INSTRUCTIONS - STRICTLY OBEY]\n${whatsappConfig.instructions}\n\n`;
+    }
+    systemInstruction += `${statusPrompt}`;
+  }
+
   const { json } = await fetchGeminiWithRetry(`${apiBaseUrl}/api/gemini/generate`, {
     method: 'POST',
     headers: {
@@ -1044,7 +1056,7 @@ ${recentMemories}`;
     },
     body: JSON.stringify({
       model: engineConfig.geminiModel,
-      systemInstruction: `${CHAT_SYSTEM_PROMPT}${statusPrompt}`,
+      systemInstruction,
       contents,
       tools: toolsPayload,
       googleAccessToken,
@@ -2512,6 +2524,10 @@ function buildBridgeContext() {
 }
 
 async function processMessageThroughModel(threadId, messageText) {
+  if (!whatsappConfig.enabled) {
+    appendLog(`[WhatsApp Bot] Bot is disabled, ignoring incoming message on thread ${threadId}`);
+    return null;
+  }
   const thread = upsertChatThread(threadId, `WhatsApp Chat`);
   if (messageText) {
     appendChatMessage(threadId, 'user', messageText);
@@ -3962,6 +3978,13 @@ What is the next action?`;
       return { thread: getChatThread(args.threadId) };
     case 'clear_chat_thread':
       return { cleared: clearChatThread(args.threadId) };
+    case 'get_whatsapp_config':
+      return whatsappConfig;
+    case 'set_whatsapp_config':
+      whatsappConfig.instructions = typeof args.instructions === 'string' ? args.instructions.trim() : whatsappConfig.instructions;
+      whatsappConfig.enabled = args.enabled !== undefined ? Boolean(args.enabled) : whatsappConfig.enabled;
+      saveAll();
+      return whatsappConfig;
     case 'whatsapp_status':
       return getWhatsAppStatus();
     case 'whatsapp_connect': {
