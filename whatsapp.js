@@ -74,6 +74,14 @@ const PROTOCOL_MESSAGE_KEYS = [
   'callLogMessage',
 ];
 
+function isDirectChatJid(jid) {
+  if (!jid) return false;
+  if (jid === 'status@broadcast') return false;
+  if (jid.endsWith('@g.us')) return false;
+  if (jid.endsWith('@newsletter')) return false;
+  return jid.endsWith('@s.whatsapp.net') || jid.endsWith('@lid');
+}
+
 // Internal function to bind all Baileys event listeners
 function bindEvents(socketInstance, authDir, saveCreds, appendLog, processMessageThroughModel) {
   socketInstance.ev.on('creds.update', saveCreds);
@@ -131,8 +139,8 @@ function bindEvents(socketInstance, authDir, saveCreds, appendLog, processMessag
         appendLog(`[WhatsApp] [${msgId}] SKIP — remoteJid is null/empty`);
         continue;
       }
-      if (!jid.endsWith('@s.whatsapp.net')) {
-        appendLog(`[WhatsApp] [${msgId}] SKIP — jid '${jid}' is not a 1-on-1 chat (group/broadcast/status)`);
+      if (!isDirectChatJid(jid)) {
+        appendLog(`[WhatsApp] [${msgId}] SKIP — jid '${jid}' is not a direct chat (group/broadcast/status/newsletter)`);
         continue;
       }
 
