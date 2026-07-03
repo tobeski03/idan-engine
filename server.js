@@ -46,7 +46,7 @@ const VERSION = process.env.IDAN_ENGINE_VERSION || '0.2.0';
 // ── Runtime config — populated by the APK during pairing, never written to disk
 // Nothing here is hardcoded. The APK holds company values and injects them
 // over the local IPC handshake. On engine restart the APK re-sends on reconnect.
-const engineConfig = {
+let engineConfig = {
   backendApiBaseUrl: null, // injected by APK at pair time
   geminiModel: null,       // injected by APK at pair time
   googleClientId: null,    // injected by APK at pair time
@@ -80,6 +80,7 @@ const EMAIL_WATCH_FILE = path.join(DATA_DIR, 'email-watch.json');
 const CHATS_FILE = path.join(DATA_DIR, 'chats.json');
 const LOG_FILE = path.join(DATA_DIR, 'engine.log');
 const WHATSAPP_CONFIG_FILE = path.join(DATA_DIR, 'whatsapp-config.json');
+const ENGINE_CONFIG_FILE = path.join(DATA_DIR, 'engine-config.json');
 
 const startedAt = Date.now();
 const jobs = new Map();
@@ -189,6 +190,15 @@ let appAuth = readJsonFile(APP_AUTH_FILE, {
 let emailWatchRules = readJsonFile(EMAIL_WATCH_FILE, []);
 let chats = readJsonFile(CHATS_FILE, { threads: {} });
 let whatsappConfig = readJsonFile(WHATSAPP_CONFIG_FILE, { instructions: '', enabled: true });
+
+try {
+  const persistedConfig = readJsonFile(ENGINE_CONFIG_FILE, {});
+  if (persistedConfig.backendApiBaseUrl) engineConfig.backendApiBaseUrl = persistedConfig.backendApiBaseUrl;
+  if (persistedConfig.geminiModel) engineConfig.geminiModel = persistedConfig.geminiModel;
+  if (persistedConfig.googleClientId) engineConfig.googleClientId = persistedConfig.googleClientId;
+} catch (e) {
+  appendLog(`error loading persisted engine config: ${e.message}`);
+}
 
 const SKILLS_DIR = path.join(DATA_DIR, 'skills');
 const CUSTOM_SKILLS_DIR = path.join(SKILLS_DIR, 'custom');
@@ -692,7 +702,7 @@ function getGoogleAuthStatus() {
 }
 
 function getBackendApiBaseUrl() {
-  return normalizeText(googleAuth.apiBaseUrl || engineConfig.backendApiBaseUrl || '');
+  return normalizeText(googleAuth.apiBaseUrl || engineConfig.backendApiBaseUrl || process.env.BACKEND_API_BASE_URL || '');
 }
 
 async function refreshGoogleAccessToken() {
@@ -703,6 +713,7 @@ async function refreshGoogleAccessToken() {
     googleAuth.clientId ||
     googleAuth.androidClientId ||
     engineConfig.googleClientId ||
+    process.env.GOOGLE_ANDROID_CLIENT_ID ||
     ''
   );
 
@@ -1055,7 +1066,7 @@ ${recentMemories}`;
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: engineConfig.geminiModel,
+      model: engineConfig.geminiModel || process.env.GEMINI_MODEL || 'gemini-2.5-flash',
       systemInstruction,
       contents,
       tools: toolsPayload,
@@ -3119,7 +3130,12 @@ async function handleCommand(command, args, req, payload) {
         if (args.config.backendApiBaseUrl) engineConfig.backendApiBaseUrl = normalizeText(args.config.backendApiBaseUrl).replace(/\/+$/, '');
         if (args.config.geminiModel) engineConfig.geminiModel = normalizeText(args.config.geminiModel);
         if (args.config.googleClientId) engineConfig.googleClientId = normalizeText(args.config.googleClientId);
-        appendLog('engine config received from APK (memory only)');
+        try {
+          writeJsonFile(ENGINE_CONFIG_FILE, engineConfig);
+          appendLog('engine config received from APK and persisted to disk');
+        } catch (e) {
+          appendLog(`failed to persist engine config to disk: ${e.message}`);
+        }
       }
 
       appendLog('paired');

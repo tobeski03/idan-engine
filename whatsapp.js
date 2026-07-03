@@ -100,10 +100,25 @@ function bindEvents(socketInstance, authDir, saveCreds, appendLog, processMessag
       const jid = msg.key.remoteJid;
       if (!jid || !jid.endsWith('@s.whatsapp.net')) continue; // Skip groups/non-individual
 
-      const messageText = msg.message?.conversation || 
-                          msg.message?.extendedTextMessage?.text || 
-                          msg.message?.imageMessage?.caption || 
-                          msg.message?.videoMessage?.caption;
+      let messageContent = msg.message;
+      if (messageContent?.ephemeralMessage) {
+        messageContent = messageContent.ephemeralMessage.message;
+      }
+      if (messageContent?.viewOnceMessage) {
+        messageContent = messageContent.viewOnceMessage.message;
+      }
+      if (messageContent?.viewOnceMessageV2) {
+        messageContent = messageContent.viewOnceMessageV2.message;
+      }
+      if (messageContent?.documentWithCaptionMessage) {
+        messageContent = messageContent.documentWithCaptionMessage.message;
+      }
+
+      const messageText = messageContent?.conversation || 
+                          messageContent?.extendedTextMessage?.text || 
+                          messageContent?.imageMessage?.caption || 
+                          messageContent?.videoMessage?.caption ||
+                          messageContent?.documentMessage?.caption;
 
       if (!messageText) continue;
 
@@ -134,6 +149,18 @@ async function initWhatsApp(appendLog, processMessageThroughModel) {
   const credsFile = path.join(authDir, 'creds.json');
   if (!fs.existsSync(credsFile)) {
     return;
+  }
+
+  if (sock) {
+    try {
+      sock.ev.removeAllListeners('connection.update');
+      sock.ev.removeAllListeners('creds.update');
+      sock.ev.removeAllListeners('messages.upsert');
+      sock.end();
+    } catch (e) {
+      // ignore
+    }
+    sock = null;
   }
 
   try {
