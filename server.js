@@ -1034,6 +1034,7 @@ async function generateGeminiReply(thread) {
 
   const appStatus = getAppAuthStatus();
   const workspaceStatus = getGoogleAuthStatus();
+  const whatsappStatus = getWhatsAppStatus();
   const connectorsList = connectors ? connectors.map(c => `• [${c.id}] ${c.label} (Status: ${c.status})`).join('\n') : 'None';
 
   // Load the top 30 most recent memory records to inject directly into context so the agent has direct recall!
@@ -1046,6 +1047,7 @@ async function generateGeminiReply(thread) {
 - Current Date: ${new Date().toISOString().split('T')[0]}
 - Google App Login: ${appStatus.connected ? `Logged In as ${appStatus.email}` : 'Not Logged In'}
 - Google Workspace Integration: ${workspaceStatus.connected ? `Connected as ${workspaceStatus.email}` : 'Not Connected'}
+- WhatsApp Bot Integration: ${whatsappConfig.enabled ? 'Enabled' : 'Disabled'} (Connection Status: ${whatsappStatus.status}${whatsappStatus.phoneNumber ? `, Linked Number: +${whatsappStatus.phoneNumber}` : ''})
 - Active Engine Connectors:\n${connectorsList}
 
 [Remembered Learnings, User Choices & Facts]

@@ -89,7 +89,7 @@ function bindEvents(socketInstance, authDir, saveCreds, appendLog, processMessag
       appendLog(`[WhatsApp] Connected successfully!`);
       whatsappState.status = 'connected';
       whatsappState.pairingCode = null;
-      whatsappState.phoneNumber = socketInstance.user?.id.split(':')[0] || null;
+      whatsappState.phoneNumber = socketInstance.user?.id.split(':')[0].split('@')[0] || null;
     }
   });
 
