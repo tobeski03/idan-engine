@@ -2285,6 +2285,19 @@ async function handleWhatsApp(args) {
   const phoneNumber = normalizeText(args.phoneNumber);
   const contactName = normalizeText(args.contactName);
   const message = normalizeText(args.message);
+
+  const normalizeWhatsAppDirectNumber = (value) => {
+    const raw = normalizeText(value);
+    const digits = raw.replace(/\D/g, '');
+    if (!digits) {
+      throw new Error('Phone number is required.');
+    }
+    const hasCountryCodeHint = raw.startsWith('+') || raw.startsWith('00') || digits.length >= 11;
+    if (!hasCountryCodeHint) {
+      throw new Error('WhatsApp direct messages need an international phone number with country code, for example +15551234567.');
+    }
+    return digits;
+  };
   
   if (getWhatsAppStatus().status === 'connected' && phoneNumber) {
     try {
@@ -2303,7 +2316,7 @@ async function handleWhatsApp(args) {
   return {
     action: 'open-url',
     url: phoneNumber
-      ? `https://wa.me/${phoneNumber.replace(/\D/g, '')}${message ? `?text=${encodeURIComponent(message)}` : ''}`
+      ? `https://wa.me/${normalizeWhatsAppDirectNumber(phoneNumber)}${message ? `?text=${encodeURIComponent(message)}` : ''}`
       : `https://wa.me/?text=${encodeURIComponent(message || query || '')}`,
     note: phoneNumber || contactName ? 'Use the generated link in the Android app or browser.' : 'No target provided.',
   };

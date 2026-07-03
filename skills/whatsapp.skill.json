@@ -2,13 +2,13 @@
   "id": "whatsapp",
   "name": "WhatsApp Skill",
   "version": "1.0.0",
-  "description": "Open WhatsApp chats, send messages by contact name or phone number, and search inside conversations.",
+  "description": "Open WhatsApp chats, send messages by contact name or international phone number, and search inside conversations. Direct wa.me sends require a country code.",
   "packageName": "com.whatsapp",
   "enabled": true,
   "toolDeclarations": [
     {
       "name": "open_whatsapp_chat",
-      "description": "Open a WhatsApp chat by contact name or international phone number.",
+      "description": "Open a WhatsApp chat by contact name or international phone number. For wa.me links, the number must include a country code.",
       "parameters": {
         "type": "OBJECT",
         "properties": {
@@ -18,7 +18,7 @@
           },
           "phoneNumber": {
             "type": "STRING",
-            "description": "International phone number for wa.me, preferably including country code."
+            "description": "International phone number for wa.me. Include the country code; local numbers will not work."
           },
           "prefillMessage": {
             "type": "STRING",
@@ -29,7 +29,7 @@
     },
     {
       "name": "send_whatsapp_message",
-      "description": "Send a WhatsApp message to a contact. Prefer phoneNumber when available because it uses WhatsApp's direct wa.me flow; otherwise use contactName search.",
+      "description": "Send a WhatsApp message to a contact. Prefer phoneNumber when available because it uses WhatsApp's direct wa.me flow, and that flow requires an international number with country code. If no country code is available, use contactName search or ask for it.",
       "parameters": {
         "type": "OBJECT",
         "properties": {
@@ -39,7 +39,7 @@
           },
           "phoneNumber": {
             "type": "STRING",
-            "description": "International phone number, preferably including country code. Use if the user gives a number."
+            "description": "International phone number for wa.me. Must include the country code, for example +15551234567."
           },
           "message": {
             "type": "STRING",
@@ -73,7 +73,7 @@
           },
           "phoneNumber": {
             "type": "STRING",
-            "description": "International phone number for wa.me."
+            "description": "International phone number for wa.me, including the country code."
           },
           "query": {
             "type": "STRING",
