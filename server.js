@@ -2285,29 +2285,54 @@ async function handleWhatsApp(args) {
   const phoneNumber = normalizeText(args.phoneNumber);
   const contactName = normalizeText(args.contactName);
   const message = normalizeText(args.message);
+  const countryCode = normalizeText(args.countryCode || args.country);
 
-  const normalizeWhatsAppDirectNumber = (value) => {
+  const normalizeWhatsAppDirectNumber = (value, providedCountryCode = '') => {
     const raw = normalizeText(value);
     const digits = raw.replace(/\D/g, '');
     if (!digits) {
       throw new Error('Phone number is required.');
     }
     const hasCountryCodeHint = raw.startsWith('+') || raw.startsWith('00') || digits.length >= 11;
-    if (!hasCountryCodeHint) {
-      throw new Error('WhatsApp direct messages need an international phone number with country code, for example +15551234567.');
+    if (hasCountryCodeHint) {
+      return digits;
     }
-    return digits;
+
+    const cleanCountryCode = normalizeText(providedCountryCode).replace(/[^\d+]/g, '');
+    if (!cleanCountryCode) {
+      const err = new Error('WhatsApp direct messages need a country code. Ask which country the number is from, then retry with the country code or a full international number like +15551234567.');
+      err.needsCountryCode = true;
+      err.missingField = 'countryCode';
+      err.prompt = 'Ask which country the number is from so you can add the country code.';
+      throw err;
+    }
+
+    const countryDigits = cleanCountryCode.startsWith('+')
+      ? cleanCountryCode.slice(1)
+      : cleanCountryCode.replace(/^00/, '');
+    const nationalDigits = digits.startsWith('0') && digits.length > 1 ? digits.slice(1) : digits;
+    return `${countryDigits}${nationalDigits}`;
   };
   
   if (getWhatsAppStatus().status === 'connected' && phoneNumber) {
     try {
-      appendLog(`[WhatsApp Skill] Routing message programmatically via Baileys to ${phoneNumber}`);
-      await sendWhatsAppMessageDirect(phoneNumber, message);
+      const directPhoneNumber = normalizeWhatsAppDirectNumber(phoneNumber, countryCode);
+      appendLog(`[WhatsApp Skill] Routing message programmatically via Baileys to ${directPhoneNumber}`);
+      await sendWhatsAppMessageDirect(directPhoneNumber, message);
       return {
         ok: true,
-        message: `WhatsApp message sent programmatically via background Baileys to ${phoneNumber}.`,
+        message: `WhatsApp message sent programmatically via background Baileys to ${directPhoneNumber}.`,
       };
     } catch (err) {
+      if (err?.needsCountryCode) {
+        return {
+          ok: false,
+          needsClarification: true,
+          missingField: err.missingField || 'countryCode',
+          prompt: err.prompt,
+          error: err.message,
+        };
+      }
       appendLog(`[WhatsApp Skill] Background send failed: ${err.message}. Falling back to wa.me link.`);
     }
   }
@@ -2316,7 +2341,7 @@ async function handleWhatsApp(args) {
   return {
     action: 'open-url',
     url: phoneNumber
-      ? `https://wa.me/${normalizeWhatsAppDirectNumber(phoneNumber)}${message ? `?text=${encodeURIComponent(message)}` : ''}`
+      ? `https://wa.me/${normalizeWhatsAppDirectNumber(phoneNumber, countryCode)}${message ? `?text=${encodeURIComponent(message)}` : ''}`
       : `https://wa.me/?text=${encodeURIComponent(message || query || '')}`,
     note: phoneNumber || contactName ? 'Use the generated link in the Android app or browser.' : 'No target provided.',
   };

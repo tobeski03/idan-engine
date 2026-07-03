@@ -2,13 +2,13 @@
   "id": "whatsapp",
   "name": "WhatsApp Skill",
   "version": "1.0.0",
-  "description": "Open WhatsApp chats, send messages by contact name or international phone number, and search inside conversations. Direct wa.me sends require a country code.",
+  "description": "Open WhatsApp chats, send messages by contact name or international phone number, and search inside conversations. Direct wa.me sends require a country code; if it is missing, ask which country the number belongs to and retry with the country calling code.",
   "packageName": "com.whatsapp",
   "enabled": true,
   "toolDeclarations": [
     {
       "name": "open_whatsapp_chat",
-      "description": "Open a WhatsApp chat by contact name or international phone number. For wa.me links, the number must include a country code.",
+      "description": "Open a WhatsApp chat by contact name or international phone number. For wa.me links, the number must include a country code. If the number is local, ask which country it belongs to and resolve the calling code before opening.",
       "parameters": {
         "type": "OBJECT",
         "properties": {
@@ -20,6 +20,10 @@
             "type": "STRING",
             "description": "International phone number for wa.me. Include the country code; local numbers will not work."
           },
+          "countryCode": {
+            "type": "STRING",
+            "description": "Optional country calling code for local numbers, like +44 or 44. Use this after asking the user which country the number is from."
+          },
           "prefillMessage": {
             "type": "STRING",
             "description": "Optional text to prefill when opening by phone number."
@@ -29,7 +33,7 @@
     },
     {
       "name": "send_whatsapp_message",
-      "description": "Send a WhatsApp message to a contact. Prefer phoneNumber when available because it uses WhatsApp's direct wa.me flow, and that flow requires an international number with country code. If no country code is available, use contactName search or ask for it.",
+      "description": "Send a WhatsApp message to a contact. Prefer phoneNumber when available because it uses WhatsApp's direct wa.me flow, and that flow requires an international number with country code. If the number is local, ask which country it belongs to, resolve the country calling code, and retry using countryCode or a full international number.",
       "parameters": {
         "type": "OBJECT",
         "properties": {
@@ -40,6 +44,10 @@
           "phoneNumber": {
             "type": "STRING",
             "description": "International phone number for wa.me. Must include the country code, for example +15551234567."
+          },
+          "countryCode": {
+            "type": "STRING",
+            "description": "Optional country calling code for local numbers, like +1 or 1. Ask the user which country the number belongs to if this is missing."
           },
           "message": {
             "type": "STRING",
@@ -74,6 +82,10 @@
           "phoneNumber": {
             "type": "STRING",
             "description": "International phone number for wa.me, including the country code."
+          },
+          "countryCode": {
+            "type": "STRING",
+            "description": "Optional country calling code for local numbers. Ask the user which country the number belongs to if the number does not already include one."
           },
           "query": {
             "type": "STRING",
