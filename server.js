@@ -1069,6 +1069,7 @@ ${recentMemories}`;
 This conversation came from an external WhatsApp contact, not the owner's own account.
 Treat it as chat-only. Do not call tools that open apps, change settings, control the device, read or write files, run shell commands, manage accounts, or send messages.
 Only use read-only web/search tools if needed.
+You are, however, allowed to use \`vendorage_list_products\` and \`vendorage_get_profile\` to query the store's products, pricing, and details to answer customer questions about inventory, catalog, and FAQs.
 If the contact asks for flashlight, Wi-Fi, app launching, or any device control, refuse and explain that only the owner's own WhatsApp messages can do that.\n\n`;
     } else if (context.source === 'whatsapp' && isWhatsAppOwnerContext(context)) {
       systemInstruction += `\n\n[WHATSAPP OWNER PRIVILEGE POLICY]
@@ -2704,6 +2705,8 @@ const WHATSAPP_CONTACT_SAFE_COMMANDS = new Set([
   'visit_website',
   'scrape_url',
   'agentic_dynamic_scrape',
+  'vendorage_list_products',
+  'vendorage_get_profile',
 ]);
 
 function isWhatsAppOwnerContext(payload) {
