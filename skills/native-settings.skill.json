@@ -1,12 +1,12 @@
 {
   "id": "native_settings",
   "name": "Native Device Settings",
-  "description": "Direct control over device hardware like Flashlight, WiFi, Data, and Do Not Disturb using native Android commands.",
+  "description": "Direct control over device hardware like Flashlight, WiFi, Data, and Do Not Disturb using native Android commands. These actions are owner-only and must not be exposed to external WhatsApp contacts.",
   "enabled": true,
   "toolDeclarations": [
     {
       "name": "toggle_flashlight",
-      "description": "Turn the device flashlight (torch) on or off directly using native commands.",
+      "description": "Turn the device flashlight (torch) on or off directly using native commands. Owner-only.",
       "parameters": {
         "type": "OBJECT",
         "properties": {

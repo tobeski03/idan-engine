@@ -2,7 +2,7 @@
   "id": "whatsapp",
   "name": "WhatsApp Skill",
   "version": "1.0.0",
-  "description": "Open WhatsApp chats, send messages by contact name or international phone number, and search inside conversations. Direct wa.me sends require a country code; if it is missing, ask which country the number belongs to and retry with the country calling code.",
+  "description": "Open WhatsApp chats, send messages by contact name or international phone number, and search inside conversations. Direct wa.me sends require a country code; if it is missing, ask which country the number belongs to and retry with the country calling code. External WhatsApp contacts are chat-only; only the owner's own WhatsApp messages may trigger device or admin tools.",
   "packageName": "com.whatsapp",
   "enabled": true,
   "toolDeclarations": [
@@ -33,7 +33,7 @@
     },
     {
       "name": "send_whatsapp_message",
-      "description": "Send a WhatsApp message to a contact. Prefer phoneNumber when available because it uses WhatsApp's direct wa.me flow, and that flow requires an international number with country code. If the number is local, ask which country it belongs to, resolve the country calling code, and retry using countryCode or a full international number.",
+      "description": "Send a WhatsApp message to a contact. Prefer phoneNumber when available because it uses WhatsApp's direct wa.me flow, and that flow requires an international number with country code. If the number is local, ask which country it belongs to, resolve the country calling code, and retry using countryCode or a full international number. Only the owner's own WhatsApp account may use device or admin tools; external contacts are chat-only.",
       "parameters": {
         "type": "OBJECT",
         "properties": {

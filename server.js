@@ -1021,7 +1021,7 @@ async function fetchGeminiWithRetry(url, options, maxRetries = 3, delayMs = 1500
   }
 }
 
-async function generateGeminiReply(thread) {
+async function generateGeminiReply(thread, context = {}) {
   const apiBaseUrl = getBackendApiBaseUrl();
   if (!apiBaseUrl) {
     throw new Error('Engine config not received yet. The Android app must complete pairing before chat is available.');
@@ -1063,6 +1063,16 @@ ${recentMemories}`;
     systemInstruction = `${CHAT_SYSTEM_PROMPT}`;
     if (whatsappConfig.instructions) {
       systemInstruction += `\n\n[CRITICAL WHATSAPP BOT INSTRUCTIONS - STRICTLY OBEY]\n${whatsappConfig.instructions}\n\n`;
+    }
+    if (context.source === 'whatsapp' && !isWhatsAppOwnerContext(context)) {
+      systemInstruction += `\n\n[WHATSAPP CONTACT SAFETY POLICY]
+This conversation came from an external WhatsApp contact, not the owner's own account.
+Treat it as chat-only. Do not call tools that open apps, change settings, control the device, read or write files, run shell commands, manage accounts, or send messages.
+Only use read-only web/search tools if needed.
+If the contact asks for flashlight, Wi-Fi, app launching, or any device control, refuse and explain that only the owner's own WhatsApp messages can do that.\n\n`;
+    } else if (context.source === 'whatsapp' && isWhatsAppOwnerContext(context)) {
+      systemInstruction += `\n\n[WHATSAPP OWNER PRIVILEGE POLICY]
+This conversation came from the owner's own WhatsApp account. Admin/device actions are allowed here when the request is explicit and appropriate.\n\n`;
     }
     systemInstruction += `${statusPrompt}`;
   }
@@ -2579,7 +2589,7 @@ function buildBridgeContext() {
   };
 }
 
-async function processMessageThroughModel(threadId, messageText) {
+async function processMessageThroughModel(threadId, messageText, context = {}) {
   appendLog(`[WhatsApp Bot] processMessageThroughModel called — thread=${threadId}, text="${(messageText || '').slice(0, 80)}"`);
 
   if (!whatsappConfig.enabled) {
@@ -2630,7 +2640,7 @@ async function processMessageThroughModel(threadId, messageText) {
     loopCount++;
     appendLog(`[WhatsApp Bot] Gemini loop iteration ${loopCount}/${maxLoops}`);
     try {
-      const result = await generateGeminiReply(thread);
+      const result = await generateGeminiReply(thread, context);
 
       if (result.functionCalls && result.functionCalls.length > 0) {
         appendLog(`[WhatsApp Bot] Gemini requested ${result.functionCalls.length} tool call(s): ${result.functionCalls.map(c => c.name).join(', ')}`);
@@ -2649,7 +2659,7 @@ async function processMessageThroughModel(threadId, messageText) {
           appendLog(`[WhatsApp Bot] Executing tool: ${call.name} — args: ${JSON.stringify(call.args)}`);
           let executionResult;
           try {
-            executionResult = await handleCommand(call.name, call.args, null, { threadId });
+            executionResult = await handleCommand(call.name, call.args, null, { threadId, ...context });
             appendLog(`[WhatsApp Bot] Tool ${call.name} succeeded`);
           } catch (e) {
             appendLog(`[WhatsApp Bot] Tool ${call.name} failed: ${e.message}`);
@@ -2689,7 +2699,30 @@ async function processMessageThroughModel(threadId, messageText) {
   return replyText;
 }
 
+const WHATSAPP_CONTACT_SAFE_COMMANDS = new Set([
+  'google_search',
+  'visit_website',
+  'scrape_url',
+  'agentic_dynamic_scrape',
+]);
+
+function isWhatsAppOwnerContext(payload) {
+  return Boolean(payload && payload.source === 'whatsapp' && payload.whatsappIsSelf);
+}
+
+function isWhatsAppContactContext(payload) {
+  return Boolean(payload && payload.source === 'whatsapp' && !payload.whatsappIsSelf);
+}
+
 async function handleCommand(command, args, req, payload) {
+  if (isWhatsAppContactContext(payload) && !WHATSAPP_CONTACT_SAFE_COMMANDS.has(command)) {
+    return {
+      ok: false,
+      restricted: true,
+      error: 'This WhatsApp action is restricted to the owner\'s own account. External WhatsApp contacts can chat normally, but they cannot control the device or use private tools.',
+    };
+  }
+
   switch (command) {
     // Gmail aliases
     case 'list_gmail_messages':

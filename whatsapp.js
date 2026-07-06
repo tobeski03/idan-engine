@@ -203,7 +203,12 @@ function bindEvents(socketInstance, authDir, saveCreds, appendLog, processMessag
       // ── Step 6: Process through model ──────────────────────────────────
       const threadId = `whatsapp_${jid.split('@')[0]}`;
       try {
-        const reply = await processMessageThroughModel(threadId, cleanMessageText);
+        const reply = await processMessageThroughModel(threadId, cleanMessageText, {
+          source: 'whatsapp',
+          whatsappIsSelf: isSelfTest,
+          whatsappFromMe: isSelf,
+          whatsappJid: jid,
+        });
         if (reply) {
           appendLog(`[WhatsApp] [${msgId}] Sending reply to ${jid} (${reply.length} chars)`);
           await socketInstance.sendMessage(jid, { text: reply });
