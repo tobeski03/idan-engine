@@ -10,6 +10,10 @@ let whatsappState = {
   phoneNumber: null,
 };
 
+// Exponential backoff state for reconnects
+let reconnectAttempts = 0;
+const MAX_RECONNECT_DELAY_MS = 60000; // cap at 60s
+
 async function cleanAuthFolder() {
   const authDir = path.join(__dirname, 'whatsapp-auth');
   if (fs.existsSync(authDir)) {
@@ -86,26 +90,54 @@ function bindEvents(socketInstance, authDir, saveCreds, appendLog, processMessag
 
     if (connection === 'close') {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-      appendLog(`[WhatsApp] Connection closed (status: ${statusCode}). Reconnect: ${shouldReconnect}`);
+      appendLog(`[WhatsApp] Connection closed (status: ${statusCode})`);
 
-      if (shouldReconnect) {
-        whatsappState.status = 'connecting';
-        setTimeout(() => {
-          if (whatsappState.status === 'connecting' || whatsappState.status === 'connected') {
-            appendLog('[WhatsApp] Attempting auto-reconnection...');
-            initWhatsApp(appendLog, processMessageThroughModel).catch((err) => {
-              appendLog(`[WhatsApp] Auto-reconnection failed: ${err.message}`);
-            });
-          }
-        }, 5000);
-      } else {
+      // Logged out — wipe auth and stop
+      if (statusCode === DisconnectReason.loggedOut) {
+        appendLog('[WhatsApp] Logged out — wiping auth and stopping.');
         whatsappState.status = 'disconnected';
         whatsappState.pairingCode = null;
         whatsappState.phoneNumber = null;
         cleanAuthFolder();
+        reconnectAttempts = 0;
+        return;
       }
+
+      // Bad session — wipe auth so next reconnect starts fresh pairing
+      if (statusCode === DisconnectReason.badSession) {
+        appendLog('[WhatsApp] Bad session — wiping auth. Re-pair from the app.');
+        whatsappState.status = 'disconnected';
+        whatsappState.pairingCode = null;
+        whatsappState.phoneNumber = null;
+        cleanAuthFolder();
+        reconnectAttempts = 0;
+        return;
+      }
+
+      // Connection replaced (another device/tab took over) — stop silently
+      if (statusCode === DisconnectReason.connectionReplaced) {
+        appendLog('[WhatsApp] Connection replaced by another session — stopping.');
+        whatsappState.status = 'disconnected';
+        reconnectAttempts = 0;
+        return;
+      }
+
+      // Everything else (connectionLost, connectionClosed, timedOut, restartRequired, etc.) — reconnect with backoff
+      reconnectAttempts++;
+      const delay = Math.min(5000 * Math.pow(1.5, reconnectAttempts - 1), MAX_RECONNECT_DELAY_MS);
+      appendLog(`[WhatsApp] Reconnecting in ${Math.round(delay / 1000)}s (attempt ${reconnectAttempts})...`);
+      whatsappState.status = 'connecting';
+
+      setTimeout(() => {
+        if (whatsappState.status === 'connecting') {
+          initWhatsApp(appendLog, processMessageThroughModel).catch((err) => {
+            appendLog(`[WhatsApp] Auto-reconnection failed: ${err.message}`);
+          });
+        }
+      }, delay);
+
     } else if (connection === 'open') {
+      reconnectAttempts = 0; // reset backoff on successful connect
       appendLog(`[WhatsApp] Connected successfully!`);
       whatsappState.status = 'connected';
       whatsappState.pairingCode = null;
@@ -216,6 +248,7 @@ function makeSocketOptions(state) {
     auth: state,
     logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
+    keepAliveIntervalMs: 30000, // send keepalive ping every 30s to prevent WA from dropping idle connections
     getMessage: async (key) => {
       return { conversation: '' };
     },

@@ -1084,7 +1084,7 @@ This conversation came from the owner's own WhatsApp account. Admin/device actio
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: engineConfig.geminiModel || process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+      model: engineConfig.geminiModel || process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite',
       systemInstruction,
       contents,
       tools: toolsPayload,
@@ -1137,7 +1137,7 @@ async function generateScraperGeminiReply(systemInstruction, promptText) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: engineConfig.geminiModel || 'gemini-2.5-flash',
+      model: engineConfig.geminiModel || 'gemini-3.1-flash-lite',
       systemInstruction,
       contents,
       googleAccessToken,
@@ -1996,7 +1996,7 @@ async function discoverAdbPort() {
   const start = 30000;
   const end = 65535;
   const batchSize = 150;
-  
+
   for (let i = start; i <= end; i += batchSize) {
     const promises = [];
     for (let p = i; p < i + batchSize && p <= end; p++) {
@@ -2324,7 +2324,7 @@ async function handleWhatsApp(args) {
     const nationalDigits = digits.startsWith('0') && digits.length > 1 ? digits.slice(1) : digits;
     return `${countryDigits}${nationalDigits}`;
   };
-  
+
   if (getWhatsAppStatus().status === 'connected' && phoneNumber) {
     try {
       const directPhoneNumber = normalizeWhatsAppDirectNumber(phoneNumber, countryCode);
@@ -2456,7 +2456,7 @@ function safeEval(code, ctx) {
 
 async function dumpAndroidUI() {
   try {
-    await executeShell('uiautomator dump /data/local/tmp/uidump.xml 2>/dev/null || adb shell uiautomator dump /data/local/tmp/uidump.xml').catch(() => {});
+    await executeShell('uiautomator dump /data/local/tmp/uidump.xml 2>/dev/null || adb shell uiautomator dump /data/local/tmp/uidump.xml').catch(() => { });
     const res = await executeShell('cat /data/local/tmp/uidump.xml 2>/dev/null || adb shell cat /data/local/tmp/uidump.xml');
     if (res.ok && res.stdout) {
       return res.stdout;
@@ -2472,25 +2472,25 @@ function findElementInXml(xml, searchText) {
   const nodeRegex = /<node[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"[^>]*>/g;
   let match;
   const candidates = [];
-  
+
   while ((match = nodeRegex.exec(xml)) !== null) {
     const nodeString = match[0];
     const x1 = parseInt(match[1], 10);
     const y1 = parseInt(match[2], 10);
     const x2 = parseInt(match[3], 10);
     const y2 = parseInt(match[4], 10);
-    
+
     const textMatch = nodeString.match(/text="([^"]*)"/);
     const descMatch = nodeString.match(/content-desc="([^"]*)"/);
     const idMatch = nodeString.match(/resource-id="([^"]*)"/);
-    
+
     const text = textMatch ? textMatch[1] : '';
     const desc = descMatch ? descMatch[1] : '';
     const resId = idMatch ? idMatch[1] : '';
-    
+
     if (
-      text.toLowerCase().includes(cleanSearch) || 
-      desc.toLowerCase().includes(cleanSearch) || 
+      text.toLowerCase().includes(cleanSearch) ||
+      desc.toLowerCase().includes(cleanSearch) ||
       resId.toLowerCase().includes(cleanSearch)
     ) {
       candidates.push({
@@ -2503,7 +2503,7 @@ function findElementInXml(xml, searchText) {
       });
     }
   }
-  
+
   if (candidates.length === 0) return null;
   candidates.sort((a, b) => b.score - a.score);
   return candidates[0];
@@ -2631,7 +2631,7 @@ async function processMessageThroughModel(threadId, messageText, context = {}) {
     appendChatMessage(threadId, 'user', messageText);
   }
 
-  appendLog(`[WhatsApp Bot] Entering Gemini loop (apiBaseUrl=${apiBaseUrl}, model=${engineConfig.geminiModel || 'gemini-2.5-flash'})`);
+  appendLog(`[WhatsApp Bot] Entering Gemini loop (apiBaseUrl=${apiBaseUrl}, model=${engineConfig.geminiModel || 'gemini-3.1-flash-lite'})`);
 
   let replyText = '';
   let loopCount = 0;
@@ -2862,7 +2862,7 @@ async function handleCommand(command, args, req, payload) {
             .filter(p => Boolean(p));
           pkg = apps.find(p => p.toLowerCase().includes(query)) || null;
         }
-        
+
         if (pkg) {
           const res = await executeShell(`monkey -p ${pkg} -c android.intent.category.LAUNCHER 1 2>&1`);
           if (res.output && res.output.includes('monkey aborted')) {
@@ -3052,10 +3052,10 @@ async function handleCommand(command, args, req, payload) {
 
     // Self-Improving App Navigator aliases
     case 'open_demo_recorder_settings':
-      await executeShell('am start -a android.settings.ACCESSIBILITY_SETTINGS 2>/dev/null || adb shell am start -a android.settings.ACCESSIBILITY_SETTINGS').catch(() => {});
+      await executeShell('am start -a android.settings.ACCESSIBILITY_SETTINGS 2>/dev/null || adb shell am start -a android.settings.ACCESSIBILITY_SETTINGS').catch(() => { });
       return { ok: true, message: 'Opened Accessibility Settings' };
     case 'open_demo_overlay_settings':
-      await executeShell('am start -a android.settings.action.MANAGE_OVERLAY_PERMISSION 2>/dev/null || adb shell am start -a android.settings.action.MANAGE_OVERLAY_PERMISSION').catch(() => {});
+      await executeShell('am start -a android.settings.action.MANAGE_OVERLAY_PERMISSION 2>/dev/null || adb shell am start -a android.settings.action.MANAGE_OVERLAY_PERMISSION').catch(() => { });
       return { ok: true, message: 'Opened Draw-Over-Apps Overlay Settings' };
     case 'show_demo_overlay':
     case 'hide_demo_overlay':
@@ -3096,15 +3096,15 @@ async function handleCommand(command, args, req, payload) {
       const pkg = args.packageName;
       const url = args.url;
       const waitMs = Number(args.waitMs || 1800);
-      
+
       if (pkg) {
-        await executeShell(`monkey -p ${pkg} -c android.intent.category.LAUNCHER 1 2>&1`).catch(() => {});
+        await executeShell(`monkey -p ${pkg} -c android.intent.category.LAUNCHER 1 2>&1`).catch(() => { });
         if (url) {
-          await executeShell(`am start -a android.intent.action.VIEW -d '${url}' 2>/dev/null`).catch(() => {});
+          await executeShell(`am start -a android.intent.action.VIEW -d '${url}' 2>/dev/null`).catch(() => { });
         }
         await new Promise((resolve) => setTimeout(resolve, waitMs));
       }
-      
+
       for (let i = 0; i <= scrolls; i++) {
         const xml = await dumpAndroidUI();
         if (xml) {
@@ -3116,15 +3116,15 @@ async function handleCommand(command, args, req, payload) {
           fullText += `--- Screen ${i + 1} ---\n${pageText}\n\n`;
         }
         if (i < scrolls) {
-          await executeShell('input swipe 500 1500 500 500 500').catch(() => {});
+          await executeShell('input swipe 500 1500 500 500 500').catch(() => { });
           await new Promise((resolve) => setTimeout(resolve, 1000));
         }
       }
-      
+
       if (args.rememberKey) {
         rememberRecord({ kind: 'text_capture', key: args.rememberKey, value: fullText });
       }
-      
+
       return { ok: true, capturedText: fullText };
     }
     case 'connect_linkedin_profile': {
@@ -3191,13 +3191,13 @@ async function handleCommand(command, args, req, payload) {
 
     // YouTube control aliases
     case 'youtube_play_pause':
-      await executeShell('input keyevent 85 2>/dev/null || adb shell input keyevent 85').catch(() => {});
+      await executeShell('input keyevent 85 2>/dev/null || adb shell input keyevent 85').catch(() => { });
       return { ok: true, message: 'Toggled YouTube Play/Pause' };
     case 'youtube_share_current': {
       const xml = await dumpAndroidUI();
       const el = findElementInXml(xml, 'Share');
       if (el) {
-        await executeShell(`input tap ${el.x} ${el.y}`).catch(() => {});
+        await executeShell(`input tap ${el.x} ${el.y}`).catch(() => { });
         return { ok: true, message: 'Clicked YouTube Share button' };
       }
       return { ok: false, error: 'Share button not found on screen' };
@@ -3207,13 +3207,13 @@ async function handleCommand(command, args, req, payload) {
       const xml = await dumpAndroidUI();
       const el = findElementInXml(xml, 'Add a comment');
       if (el) {
-        await executeShell(`input tap ${el.x} ${el.y}`).catch(() => {});
+        await executeShell(`input tap ${el.x} ${el.y}`).catch(() => { });
         await new Promise(resolve => setTimeout(resolve, 1000));
-        await executeShell(`input text "${commentText.replace(/"/g, '\\"')}"`).catch(() => {});
+        await executeShell(`input text "${commentText.replace(/"/g, '\\"')}"`).catch(() => { });
         const postXml = await dumpAndroidUI();
         const postEl = findElementInXml(postXml, 'Post') || findElementInXml(postXml, 'Send') || findElementInXml(postXml, 'com.google.android.youtube:id/send_button');
         if (postEl) {
-          await executeShell(`input tap ${postEl.x} ${postEl.y}`).catch(() => {});
+          await executeShell(`input tap ${postEl.x} ${postEl.y}`).catch(() => { });
           return { ok: true, message: 'Posted comment successfully' };
         }
       }
@@ -3820,7 +3820,7 @@ What is the next action?`;
       if (!port || !code) {
         return { ok: false, error: 'Both pairing port and pairing code are required.' };
       }
-      
+
       appendLog(`[ADB] Running pair command for port ${port}`);
       try {
         const result = await new Promise((resolve, reject) => {
@@ -3833,7 +3833,7 @@ What is the next action?`;
             }
           });
         });
-        
+
         appendLog(`[ADB] Pair successful: ${result}`);
         connectAdb();
         return { ok: true, message: result };
