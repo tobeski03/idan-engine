@@ -10,6 +10,32 @@ let whatsappState = {
   phoneNumber: null,
 };
 
+let cachedWaVersion = null;
+let lastVersionFetchTime = 0;
+
+async function getWaWebVersion(appendLog) {
+  let version = [2, 3000, 1017531287];
+  const now = Date.now();
+  // Cache version for 24 hours to prevent repeated network requests during reconnect loops
+  if (cachedWaVersion && (now - lastVersionFetchTime < 24 * 60 * 60 * 1000)) {
+    return cachedWaVersion;
+  }
+  try {
+    appendLog(`[WhatsApp] Fetching latest WA Web version from server...`);
+    const { version: latestVersion } = await fetchLatestWaWebVersion({});
+    version = latestVersion;
+    cachedWaVersion = latestVersion;
+    lastVersionFetchTime = now;
+    appendLog(`[WhatsApp] Successfully fetched version: ${version.join('.')}`);
+  } catch (err) {
+    appendLog(`[WhatsApp] Failed to fetch latest WA Web version: ${err.message}`);
+    if (cachedWaVersion) {
+      version = cachedWaVersion;
+    }
+  }
+  return version;
+}
+
 async function cleanAuthFolder() {
   const authDir = path.join(__dirname, 'whatsapp-auth');
   if (fs.existsSync(authDir)) {
@@ -249,13 +275,7 @@ async function initWhatsApp(appendLog, processMessageThroughModel) {
     whatsappState.status = 'connecting';
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
-    let version = [2, 3000, 1017531287];
-    try {
-      const { version: latestVersion } = await fetchLatestWaWebVersion({});
-      version = latestVersion;
-    } catch (err) {
-      appendLog(`[WhatsApp] Failed to fetch latest WA Web version: ${err.message}`);
-    }
+    const version = await getWaWebVersion(appendLog);
 
     sock = makeWASocket(makeSocketOptions(version, state));
 
@@ -284,13 +304,7 @@ async function connectWhatsApp(phoneNumber, appendLog, processMessageThroughMode
   const authDir = path.join(__dirname, 'whatsapp-auth');
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
-  let version = [2, 3000, 1017531287];
-  try {
-    const { version: latestVersion } = await fetchLatestWaWebVersion({});
-    version = latestVersion;
-  } catch (err) {
-    appendLog(`[WhatsApp] Failed to fetch latest WA Web version: ${err.message}`);
-  }
+  const version = await getWaWebVersion(appendLog);
 
   sock = makeWASocket(makeSocketOptions(version, state));
 
