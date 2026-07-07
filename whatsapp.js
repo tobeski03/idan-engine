@@ -1,4 +1,4 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestWaWebVersion, Browsers } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const path = require('path');
 const fs = require('fs');
@@ -9,32 +9,6 @@ let whatsappState = {
   pairingCode: null,
   phoneNumber: null,
 };
-
-let cachedWaVersion = null;
-let lastVersionFetchTime = 0;
-
-async function getWaWebVersion(appendLog) {
-  let version = [2, 3000, 1017531287];
-  const now = Date.now();
-  // Cache version for 24 hours to prevent repeated network requests during reconnect loops
-  if (cachedWaVersion && (now - lastVersionFetchTime < 24 * 60 * 60 * 1000)) {
-    return cachedWaVersion;
-  }
-  try {
-    appendLog(`[WhatsApp] Fetching latest WA Web version from server...`);
-    const { version: latestVersion } = await fetchLatestWaWebVersion({});
-    version = latestVersion;
-    cachedWaVersion = latestVersion;
-    lastVersionFetchTime = now;
-    appendLog(`[WhatsApp] Successfully fetched version: ${version.join('.')}`);
-  } catch (err) {
-    appendLog(`[WhatsApp] Failed to fetch latest WA Web version: ${err.message}`);
-    if (cachedWaVersion) {
-      version = cachedWaVersion;
-    }
-  }
-  return version;
-}
 
 async function cleanAuthFolder() {
   const authDir = path.join(__dirname, 'whatsapp-auth');
@@ -237,13 +211,11 @@ function bindEvents(socketInstance, authDir, saveCreds, appendLog, processMessag
   });
 }
 
-function makeSocketOptions(version, state) {
+function makeSocketOptions(state) {
   return {
-    version,
     auth: state,
     logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
-    browser: Browsers.macOS('Chrome'),
     getMessage: async (key) => {
       return { conversation: '' };
     },
@@ -275,9 +247,7 @@ async function initWhatsApp(appendLog, processMessageThroughModel) {
     whatsappState.status = 'connecting';
     const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
-    const version = await getWaWebVersion(appendLog);
-
-    sock = makeWASocket(makeSocketOptions(version, state));
+    sock = makeWASocket(makeSocketOptions(state));
 
     bindEvents(sock, authDir, saveCreds, appendLog, processMessageThroughModel);
   } catch (err) {
@@ -304,9 +274,7 @@ async function connectWhatsApp(phoneNumber, appendLog, processMessageThroughMode
   const authDir = path.join(__dirname, 'whatsapp-auth');
   const { state, saveCreds } = await useMultiFileAuthState(authDir);
 
-  const version = await getWaWebVersion(appendLog);
-
-  sock = makeWASocket(makeSocketOptions(version, state));
+  sock = makeWASocket(makeSocketOptions(state));
 
   bindEvents(sock, authDir, saveCreds, appendLog, processMessageThroughModel);
 
