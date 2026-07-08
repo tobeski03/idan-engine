@@ -33,10 +33,16 @@ export class CandleService {
     timeframe: string,
     limit = 500
   ): Promise<Candle[]> {
+    const key = `${exchange}:${symbol}:${timeframe}`.toLowerCase();
+    const existing = this.history.get(key);
+    if (existing && existing.length > 0) {
+      Logger.info(`Using cached history for ${key} (${existing.length} candles).`);
+      return existing;
+    }
+
     const provider = this.getProvider(exchange);
     const candles = await provider.fetchCandles(exchange, symbol, timeframe, limit);
     
-    const key = `${exchange}:${symbol}:${timeframe}`.toLowerCase();
     this.history.set(key, candles);
     
     return candles;

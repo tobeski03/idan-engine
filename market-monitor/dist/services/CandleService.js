@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.CandleService = void 0;
+const Logger_1 = require("../utils/Logger");
 class CandleService {
     providers = [];
     history = new Map();
@@ -24,9 +25,14 @@ class CandleService {
      * Fetches initial historical candles and caches them.
      */
     async fetchHistory(exchange, symbol, timeframe, limit = 500) {
+        const key = `${exchange}:${symbol}:${timeframe}`.toLowerCase();
+        const existing = this.history.get(key);
+        if (existing && existing.length > 0) {
+            Logger_1.Logger.info(`Using cached history for ${key} (${existing.length} candles).`);
+            return existing;
+        }
         const provider = this.getProvider(exchange);
         const candles = await provider.fetchCandles(exchange, symbol, timeframe, limit);
-        const key = `${exchange}:${symbol}:${timeframe}`.toLowerCase();
         this.history.set(key, candles);
         return candles;
     }

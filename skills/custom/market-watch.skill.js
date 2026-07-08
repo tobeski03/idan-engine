@@ -161,6 +161,13 @@ function initMonitor() {
     console.error('[Market Monitor Error]', data);
   });
 
+  EventBus.getInstance().on('market.sync.completed', (data) => {
+    const { exchange, symbol, timeframe, candleCount } = data;
+    const msg = `⚡ *Market Watch Active* 📊\n` +
+      `Successfully synced ${candleCount} candles for ${symbol} on ${exchange.toUpperCase()} (${timeframe}). Live monitoring is now active!`;
+    sendAlert(msg);
+  });
+
   // Load and start saved watches on boot
   const savedWatches = readWatches();
   if (savedWatches.length > 0) {
@@ -332,12 +339,14 @@ module.exports = {
         watches.push(newWatch);
         writeWatches(watches);
 
-        ctx.appendLog(`[Market Watch Skill] Starting watch for ${symbol} on ${exchange} (${timeframe})`);
-        await startMonitoring(watches);
+        ctx.appendLog(`[Market Watch Skill] Starting watch for ${symbol} on ${exchange} (${timeframe}) in the background`);
+        startMonitoring(watches).catch(err => {
+          ctx.appendLog(`[Market Watch Skill Error] Failed to start background monitoring: ${err.message}`);
+        });
 
         return {
           ok: true,
-          message: `Successfully started monitoring ${symbol} on ${exchange} (${timeframe}) for Fair Value Gaps.`
+          message: `Successfully queued watch for ${symbol} on ${exchange} (${timeframe}). The initial synchronization of historical candles is starting in the background.`
         };
       }
 
@@ -362,7 +371,10 @@ module.exports = {
 
         writeWatches(filtered);
         ctx.appendLog(`[Market Watch Skill] Stopping watch for ${symbol} on ${exchange} (${timeframe})`);
-        await startMonitoring(filtered);
+        
+        startMonitoring(filtered).catch(err => {
+          ctx.appendLog(`[Market Watch Skill Error] Failed to update background monitoring: ${err.message}`);
+        });
 
         return {
           ok: true,
