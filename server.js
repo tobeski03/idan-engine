@@ -186,6 +186,7 @@ let appAuth = readJsonFile(APP_AUTH_FILE, {
   refreshToken: '',
   expiryMs: 0,
   email: '',
+  username: '',
 });
 let emailWatchRules = readJsonFile(EMAIL_WATCH_FILE, []);
 let chats = readJsonFile(CHATS_FILE, { threads: {} });
@@ -775,6 +776,7 @@ function normalizeAppAuthState(next = {}) {
     refreshToken: (next.refreshToken !== undefined && next.refreshToken !== '') ? normalizeText(next.refreshToken) : appAuth.refreshToken,
     expiryMs: Number.isFinite(expiryMs) && expiryMs > 0 ? expiryMs : 0,
     email: next.email !== undefined ? normalizeText(next.email).toLowerCase() : appAuth.email,
+    username: next.username !== undefined ? normalizeText(next.username) : appAuth.username,
   };
 }
 
@@ -790,6 +792,7 @@ function clearAppAuthState() {
     refreshToken: '',
     expiryMs: 0,
     email: '',
+    username: '',
   };
   saveAll();
   return appAuth;
@@ -801,6 +804,7 @@ function getAppAuthStatus() {
   return {
     connected: Boolean(appAuth.accessToken || appAuth.refreshToken),
     email: appAuth.email || '',
+    username: appAuth.username || '',
     hasAccessToken: Boolean(appAuth.accessToken),
     hasRefreshToken: Boolean(appAuth.refreshToken),
     expiryMs: expiryMs > 0 ? expiryMs : 0,
@@ -814,10 +818,10 @@ async function refreshAppAccessToken() {
 
   const apiBaseUrl = getBackendApiBaseUrl();
   if (!apiBaseUrl) {
-    throw new Error('Google refresh failed: Backend URL is not configured.');
+    throw new Error('App refresh failed: Backend URL is not configured.');
   }
 
-  const response = await fetch(`${apiBaseUrl}/api/auth/google/refresh`, {
+  const response = await fetch(`${apiBaseUrl}/api/auth/refresh`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ refreshToken }),
@@ -825,7 +829,7 @@ async function refreshAppAccessToken() {
 
   const json = await response.json().catch(() => ({}));
   if (!response.ok || !json.access_token) {
-    throw new Error(json?.error || `Google App refresh failed ${response.status}`);
+    throw new Error(json?.error || `App refresh failed ${response.status}`);
   }
 
   const expiryMs = Number.isFinite(Number(json.expires_in)) && Number(json.expires_in) > 0
@@ -851,7 +855,7 @@ async function ensureAppAccessToken() {
   if (refreshed) return refreshed;
   if (token) return token;
 
-  throw new Error('App is not logged in. Please sign in with Google first.');
+  throw new Error('App is not logged in. Please sign in first.');
 }
 
 async function googleApiFetch(apiBaseUrl, pathSuffix, options = {}) {
