@@ -2646,8 +2646,8 @@ async function processMessageThroughModel(threadId, messageText, context = {}) {
       if (result.functionCalls && result.functionCalls.length > 0) {
         appendLog(`[WhatsApp Bot] Gemini requested ${result.functionCalls.length} tool call(s): ${result.functionCalls.map(c => c.name).join(', ')}`);
 
-        // Format functionCall model response
-        const parts = result.functionCalls.map((call) => ({
+        // Format functionCall model response, preserving candidateContent parts if returned by the backend
+        const parts = result.raw?.candidateContent?.parts || result.functionCalls.map((call) => ({
           functionCall: {
             name: call.name,
             args: call.args || {},
@@ -2682,12 +2682,14 @@ async function processMessageThroughModel(threadId, messageText, context = {}) {
 
       replyText = result.text || 'idanAI returned an empty reply.';
       appendLog(`[WhatsApp Bot] Gemini final reply (${replyText.length} chars): "${replyText.slice(0, 120)}${replyText.length > 120 ? '...' : ''}"`);
-      appendChatMessage(threadId, 'assistant', replyText);
+      const finalParts = result.raw?.candidateContent?.parts || [{ text: replyText }];
+      appendChatMessage(threadId, 'assistant', replyText, finalParts);
       break;
     } catch (error) {
       appendLog(`[WhatsApp Bot] Gemini loop error on iteration ${loopCount}: ${error.message}`);
       replyText = `idanAI chat failed: ${error.message}`;
-      appendChatMessage(threadId, 'assistant', replyText);
+      const errorParts = [{ text: replyText }];
+      appendChatMessage(threadId, 'assistant', replyText, errorParts);
       break;
     }
   }
@@ -4160,8 +4162,8 @@ What is the next action?`;
           const result = await generateGeminiReply(thread);
 
           if (result.functionCalls && result.functionCalls.length > 0) {
-            // Format functionCall model response
-            const parts = result.functionCalls.map((call) => ({
+            // Format functionCall model response, preserving candidateContent parts if returned by the backend
+            const parts = result.raw?.candidateContent?.parts || result.functionCalls.map((call) => ({
               functionCall: {
                 name: call.name,
                 args: call.args || {},
@@ -4194,7 +4196,8 @@ What is the next action?`;
           }
 
           replyText = result.text || 'idanAI returned an empty reply.';
-          assistantMessage = appendChatMessage(threadId, 'assistant', replyText);
+          const finalParts = result.raw?.candidateContent?.parts || [{ text: replyText }];
+          assistantMessage = appendChatMessage(threadId, 'assistant', replyText, finalParts);
           break;
         } catch (error) {
           appendLog(`idanAI chat loop error: ${error.message}`);
