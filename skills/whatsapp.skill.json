@@ -2,7 +2,7 @@
   "id": "whatsapp",
   "name": "WhatsApp Skill",
   "version": "1.0.0",
-  "description": "Open WhatsApp chats, send messages by contact name or international phone number, and search inside conversations. Direct wa.me sends require a country code; if it is missing, ask which country the number belongs to and retry with the country calling code. External WhatsApp contacts are chat-only; only the owner's own WhatsApp messages may trigger device or admin tools.",
+  "description": "Control WhatsApp through the Go whatsmeow sidecar when installed, with QR pairing, durable sessions, quoted-message context, internal owner chat, image sending, and customer-safe replies. Fall back to Baileys only when the sidecar is unavailable. Direct wa.me sends require a country code; if it is missing, ask which country the number belongs to and retry with the country calling code. External WhatsApp contacts are chat-only; only the owner's own WhatsApp messages may trigger device or admin tools.",
   "packageName": "com.whatsapp",
   "enabled": true,
   "toolDeclarations": [

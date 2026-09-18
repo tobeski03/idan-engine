@@ -10,7 +10,7 @@ const {
   disconnectWhatsApp,
   getWhatsAppStatus,
   sendWhatsAppMessageDirect,
-} = require('./whatsapp');
+} = require('./whatsapp-adapter');
 
 const execFileAsync = promisify(execFile);
 
@@ -42,6 +42,9 @@ try {
 const PORT = Number(process.env.IDAN_ENGINE_PORT || 3788);
 const HOST = process.env.IDAN_ENGINE_HOST || '0.0.0.0'; // Listen on all interfaces to accept connections from emulator/network
 const VERSION = process.env.IDAN_ENGINE_VERSION || '0.2.0';
+const AI_CONTEXT_MESSAGES = Math.min(Math.max(Number(process.env.IDAN_AI_CONTEXT_MESSAGES || 8), 4), 16);
+const AI_MEMORY_ITEMS = Math.min(Math.max(Number(process.env.IDAN_AI_MEMORY_ITEMS || 12), 0), 30);
+const AI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite';
 
 // ── Runtime config — populated by the APK during pairing, never written to disk
 // Nothing here is hardcoded. The APK holds company values and injects them
@@ -377,6 +380,19 @@ function readBody(req) {
 
 function normalizeText(value) {
   return String(value || '').trim();
+}
+
+function formatAssistantText(value) {
+  const source = normalizeText(value);
+  if (!source) return '';
+  try {
+    const parsed = JSON.parse(source);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const answer = parsed.answer || parsed.text || parsed.message || parsed.result;
+      if (typeof answer === 'string') return normalizeText(answer);
+    }
+  } catch (_) { /* normal Markdown/plain text */ }
+  return source.replace(/\n{3,}/g, '\n\n');
 }
 
 function cleanKey(value) {
@@ -1033,7 +1049,7 @@ async function generateGeminiReply(thread, context = {}) {
 
   const googleAccessToken = await ensureAppAccessToken();
   const history = Array.isArray(thread?.messages)
-    ? thread.messages.slice(-30).filter((m) => m.role === 'user' || m.role === 'assistant' || m.role === 'function')
+    ? thread.messages.slice(-AI_CONTEXT_MESSAGES).filter((m) => m.role === 'user' || m.role === 'assistant' || m.role === 'function')
     : [];
   const rawContents = history.map((message) => chatContentFromMessage(message));
   const contents = sanitizeContentsForGemini(rawContents);
@@ -1047,8 +1063,8 @@ async function generateGeminiReply(thread, context = {}) {
   const connectorsList = connectors ? connectors.map(c => `• [${c.id}] ${c.label} (Status: ${c.status})`).join('\n') : 'None';
 
   // Load the top 30 most recent memory records to inject directly into context so the agent has direct recall!
-  const recentMemories = Array.isArray(memory) && memory.length > 0
-    ? memory.slice(-30).map(m => `• [${m.kind}] ${m.key}: ${m.value}`).join('\n')
+  const recentMemories = Array.isArray(memory) && memory.length > 0 && AI_MEMORY_ITEMS > 0
+    ? memory.slice(-AI_MEMORY_ITEMS).map(m => `• [${m.kind}] ${m.key}: ${m.value}`).join('\n')
     : 'None';
 
   const statusPrompt = `\n\n[System Environment Status]
@@ -1088,7 +1104,7 @@ This conversation came from the owner's own WhatsApp account. Admin/device actio
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: engineConfig.geminiModel || process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite',
+      model: engineConfig.geminiModel || AI_MODEL,
       systemInstruction,
       contents,
       tools: toolsPayload,
@@ -1096,7 +1112,7 @@ This conversation came from the owner's own WhatsApp account. Admin/device actio
     }),
   });
 
-  const text = normalizeText(json.text || '');
+  const text = formatAssistantText(json.text || '');
   const functionCalls = json.functionCalls || [];
 
   if (!text && functionCalls.length === 0) {
@@ -1141,14 +1157,14 @@ async function generateScraperGeminiReply(systemInstruction, promptText) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      model: engineConfig.geminiModel || 'gemini-3.1-flash-lite',
+      model: engineConfig.geminiModel || AI_MODEL,
       systemInstruction,
       contents,
       googleAccessToken,
     }),
   });
 
-  const text = normalizeText(json.text || '');
+  const text = formatAssistantText(json.text || '');
   return { text, raw: json };
 }
 
@@ -2635,7 +2651,7 @@ async function processMessageThroughModel(threadId, messageText, context = {}) {
     appendChatMessage(threadId, 'user', messageText);
   }
 
-  appendLog(`[WhatsApp Bot] Entering Gemini loop (apiBaseUrl=${apiBaseUrl}, model=${engineConfig.geminiModel || 'gemini-3.1-flash-lite'})`);
+  appendLog(`[WhatsApp Bot] Entering Gemini loop (apiBaseUrl=${apiBaseUrl}, model=${engineConfig.geminiModel || AI_MODEL})`);
 
   let replyText = '';
   let loopCount = 0;
@@ -2684,7 +2700,7 @@ async function processMessageThroughModel(threadId, messageText, context = {}) {
         continue;
       }
 
-      replyText = result.text || 'idanAI returned an empty reply.';
+      replyText = formatAssistantText(result.text) || 'idanAI returned an empty reply.';
       appendLog(`[WhatsApp Bot] Gemini final reply (${replyText.length} chars): "${replyText.slice(0, 120)}${replyText.length > 120 ? '...' : ''}"`);
       const finalParts = result.raw?.candidateContent?.parts || [{ text: replyText }];
       appendChatMessage(threadId, 'assistant', replyText, finalParts);
@@ -3664,10 +3680,15 @@ Available Actions:
 2. {"type": "type", "selector": "CSS_SELECTOR", "text": "text to type", "reason": "Brief reason"}
 3. {"type": "scroll", "direction": "down"|"up", "reason": "Brief reason"}
 4. {"type": "wait", "durationMs": 3000, "reason": "Brief reason"}
-5. {"type": "finish", "data": "The final extracted data answering the scraping goal", "reason": "Brief reason"}
+5. {"type": "press", "key": "ENTER|TAB|ESC", "reason": "Brief reason"}
+6. {"type": "navigate", "url": "https://...", "reason": "Brief reason"}
+7. {"type": "back", "reason": "Brief reason"}
+8. {"type": "finish", "data": "The final extracted data answering the scraping goal", "reason": "Brief reason"}
 
 Guidelines:
 - Prefer CSS selectors that are standard (like ID, class, tag). Keep them simple.
+- Understand web-app controls by placeholder, aria-label, role, visible text, and contenteditable—not only input tags.
+- For Google Docs, click the visible editor canvas or use a contenteditable/role textbox target; do not mistake the Ask Gemini panel for the document body unless the user explicitly requests Gemini.
 - If the goal is fully satisfied by the visible text, return the "finish" action with the extracted data immediately.
 - If you get stuck or see an error page, return "finish" with a clear error message.
 - NEVER attempt to navigate to Cloudflare or captcha pages. If you see them, return "finish" immediately.
@@ -4135,7 +4156,8 @@ What is the next action?`;
       return getWhatsAppStatus();
     case 'whatsapp_connect': {
       const code = await connectWhatsApp(args.phoneNumber, appendLog, processMessageThroughModel);
-      return { ok: true, pairingCode: code };
+      const status = getWhatsAppStatus();
+      return { ok: true, pairingCode: code && !String(code).startsWith('data:image/') ? code : null, qr: code && String(code).startsWith('data:image/') ? code : status.qr || null, provider: status.provider || 'whatsapp' };
     }
     case 'whatsapp_disconnect':
       await disconnectWhatsApp(true); // wipe auth on explicit user disconnect
@@ -4199,7 +4221,7 @@ What is the next action?`;
             continue;
           }
 
-          replyText = result.text || 'idanAI returned an empty reply.';
+          replyText = formatAssistantText(result.text) || 'idanAI returned an empty reply.';
           const finalParts = result.raw?.candidateContent?.parts || [{ text: replyText }];
           assistantMessage = appendChatMessage(threadId, 'assistant', replyText, finalParts);
           break;

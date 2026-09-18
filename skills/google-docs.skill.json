@@ -2,7 +2,7 @@
   "id": "google-docs",
   "name": "Google Docs",
   "version": "1.0.0",
-  "description": "Create, read, append to, and replace text in Google Docs using the connected Google account.",
+  "description": "Create, read, append to, and replace text in Google Docs using the connected Google account. For complex web-app editing, use the Chrome Browser Controller to inspect the logged-in Google Docs page, focus the canvas editor, type through the real keyboard target, click Ask Gemini when explicitly requested, and verify the visible result.",
   "enabled": true,
   "toolDeclarations": [
     {

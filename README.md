@@ -27,13 +27,14 @@ bash ~/idan-engine/install-termux.sh
 ```
 
 The script will:
-1. Install `git`, `nodejs-lts`, `curl`, `termux-api` via `pkg`
+1. Install `git`, `nodejs-lts`, `curl`, `golang`, `clang`, `termux-services`, `termux-api`, and `android-tools` automatically via `pkg`
 2. Clone/pull the repo into `~/idan-engine`
 3. Write production config silently — no prompts
 4. Generate a one-time **pairing token** and display it (enter it in the Android app)
-5. Run `npm install`
-6. Register the engine with **termux-services** for auto-restart on boot/crash
-7. Print a health-check confirmation
+5. Run `npm install` and install the Chrome/CDP browser-controller dependency
+6. Build the Go **whatsmeow** WhatsApp sidecar for the phone's CPU architecture
+7. Register the engine with **termux-services** for auto-restart on boot/crash
+8. Print a health-check confirmation
 
 The installer is **fully non-interactive** after you run it.
 
@@ -43,7 +44,7 @@ The installer is **fully non-interactive** after you run it.
 bash ~/idan-engine/update.sh
 ```
 
-Pulls the latest code, re-runs `npm install`, restarts the service, and health-checks.
+Pulls the latest code, installs any newly required Termux packages, re-runs `npm install`, rebuilds the WhatsApp whatsmeow sidecar, restarts the service, and health-checks. Users do not need to manually run `pkg install` after the initial setup.
 
 ### 3 · Logs
 

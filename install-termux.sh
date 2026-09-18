@@ -52,6 +52,9 @@ _pkg_install() {
 _pkg_install git          git
 _pkg_install nodejs-lts   node
 _pkg_install curl         curl
+_pkg_install golang       go
+_pkg_install clang        clang
+_pkg_install termux-services sv
 _pkg_install termux-api   termux-battery-status
 _pkg_install android-tools adb
 
@@ -105,7 +108,21 @@ fi
 info "Installing npm dependencies..."
 npm --prefix "${TARGET_DIR}" install --omit=dev
 
-# ── Step 6: Register with termux-services (auto-restart on boot/crash) ────────
+# ── Step 6: Build the Go WhatsApp bridge ─────────────────────────────────────
+WHATSAPP_BUILD="${TARGET_DIR}/build-whatsapp-sidecar.sh"
+if [[ -f "${WHATSAPP_BUILD}" && -x "$(command -v go || true)" ]]; then
+  info "Building the WhatsApp whatsmeow sidecar for this phone..."
+  chmod +x "${WHATSAPP_BUILD}"
+  if bash "${WHATSAPP_BUILD}"; then
+    success "WhatsApp whatsmeow sidecar built ✓"
+  else
+    warn "Whatsmeow build failed. The engine will use the fallback WhatsApp connector until the next update."
+  fi
+else
+  warn "Go or the Whatsmeow build script is unavailable; WhatsApp sidecar was not built."
+fi
+
+# ── Step 7: Register with termux-services (auto-restart on boot/crash) ────────
 SERVICE_DIR="${HOME}/.termux/service/idan-engine"
 RUN_SCRIPT="${TARGET_DIR}/service/run"
 
@@ -125,16 +142,16 @@ if command -v sv &>/dev/null && [[ -f "${RUN_SCRIPT}" ]]; then
   success "Service registered with termux-services. It will auto-start on every Termux boot."
 else
   # Fallback: simple background process
-  warn "termux-services not found or service/run missing — starting engine in background..."
+  warn "termux-services is unavailable or service/run is missing — starting engine in background..."
   pkill -f "node.*server.js" 2>/dev/null || true
   sleep 1
   nohup node "${TARGET_DIR}/server.js" >> "${TARGET_DIR}/engine.log" 2>&1 &
   ENGINE_PID=$!
   success "Engine started in background (PID ${ENGINE_PID}). Not persistent across reboots."
-  warn "For auto-restart, install termux-services: pkg install termux-services"
+  warn "Auto-restart is unavailable on this installation. Re-run install-termux.sh after fixing Termux package access."
 fi
 
-# ── Step 7: Health check ──────────────────────────────────────────────────────
+# ── Step 8: Health check ──────────────────────────────────────────────────────
 info "Waiting for engine to start..."
 sleep 3
 

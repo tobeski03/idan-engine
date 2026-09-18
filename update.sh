@@ -31,10 +31,35 @@ else
   warn "No .git directory found at ${SCRIPT_DIR} — skipping git pull."
 fi
 
+# ── Ensure new runtime prerequisites are installed automatically ──────────────
+if command -v pkg &>/dev/null; then
+  info "Checking Termux runtime packages..."
+  pkg update -y >/dev/null 2>&1 || true
+  pkg install -y git nodejs-lts curl golang clang termux-services termux-api android-tools >/dev/null
+  success "Termux runtime packages are ready."
+fi
+
 # ── Re-install dependencies (in case package.json changed) ───────────────────
 info "Checking npm dependencies..."
 npm --prefix "${SCRIPT_DIR}" install --omit=dev
 success "Dependencies up to date."
+
+# ── Keep native capabilities aligned with the checked-out code ───────────────
+if command -v go &>/dev/null && [[ -f "${SCRIPT_DIR}/build-whatsapp-sidecar.sh" ]]; then
+  info "Rebuilding the WhatsApp whatsmeow sidecar..."
+  chmod +x "${SCRIPT_DIR}/build-whatsapp-sidecar.sh"
+  if bash "${SCRIPT_DIR}/build-whatsapp-sidecar.sh"; then
+    success "WhatsApp whatsmeow sidecar updated."
+  else
+    warn "Whatsmeow rebuild failed; keeping the previous sidecar if one exists."
+  fi
+else
+  warn "Go is not available; skipping Whatsmeow rebuild. The next install/update will retry it."
+fi
+
+if ! command -v sv &>/dev/null; then
+  warn "termux-services is not available; the engine can run, but automatic restart is disabled."
+fi
 
 # ── Restart service ───────────────────────────────────────────────────────────
 if command -v sv &>/dev/null; then

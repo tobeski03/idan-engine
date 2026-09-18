@@ -8,13 +8,15 @@
     "dev": "node server.js",
     "health": "node server.js --health-only",
     "install-termux": "bash install-termux.sh",
-    "update": "bash update.sh"
+    "update": "bash update.sh",
+    "build:whatsapp": "bash build-whatsapp-sidecar.sh"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^7.0.0-rc13",
-    "pino": "^9.2.0"
+    "pino": "^9.2.0",
+    "playwright-core": "^1.55.0"
   }
 }
