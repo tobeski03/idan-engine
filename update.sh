@@ -67,12 +67,20 @@ if ! command -v sv &>/dev/null; then
 fi
 
 # ── Restart service ───────────────────────────────────────────────────────────
-if command -v sv &>/dev/null; then
+SERVICE_ROOT="${PREFIX:-/data/data/com.termux/files/usr}/var/service"
+if command -v sv &>/dev/null && [[ -e "${SERVICE_ROOT}/idan-engine" ]]; then
   info "Restarting via termux-services..."
-  sv restart idan-engine
-  success "Service restarted."
+  if sv restart idan-engine; then
+    success "Service restarted."
+  else
+    warn "termux-services could not restart idan-engine; using process restart..."
+    pkill -f "node.*server.js" 2>/dev/null || true
+    sleep 1
+    nohup node "${SCRIPT_DIR}/server.js" >> "${LOG}" 2>&1 &
+    success "Engine restarted in background (PID $!)."
+  fi
 else
-  info "termux-services not found — using process restart..."
+  info "idan-engine service is not registered — using process restart..."
   pkill -f "node.*server.js" 2>/dev/null && info "Stopped old process." || true
   sleep 1
   nohup node "${SCRIPT_DIR}/server.js" >> "${LOG}" 2>&1 &
