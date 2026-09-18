@@ -44,7 +44,7 @@ const HOST = process.env.IDAN_ENGINE_HOST || '0.0.0.0'; // Listen on all interfa
 const VERSION = process.env.IDAN_ENGINE_VERSION || '0.2.0';
 const AI_CONTEXT_MESSAGES = Math.min(Math.max(Number(process.env.IDAN_AI_CONTEXT_MESSAGES || 8), 4), 16);
 const AI_MEMORY_ITEMS = Math.min(Math.max(Number(process.env.IDAN_AI_MEMORY_ITEMS || 12), 0), 30);
-const AI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite';
+const AI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash-lite';
 
 // ── Runtime config — populated by the APK during pairing, never written to disk
 // Nothing here is hardcoded. The APK holds company values and injects them
