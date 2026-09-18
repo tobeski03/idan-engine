@@ -4,7 +4,15 @@ const path = require('path');
 const configPath = path.join(__dirname, '..', '..', 'vendorage-config.json');
 function config() { try { return JSON.parse(fs.readFileSync(configPath, 'utf8')); } catch { return {}; } }
 function save(next) { fs.writeFileSync(configPath, JSON.stringify(next, null, 2), 'utf8'); }
-function declaration(name, description, properties = {}, required = []) { return { name, description, parameters: { type: 'OBJECT', properties, required } }; }
+function declaration(name, description, properties = {}, required = []) {
+  // Gemini requires an item schema for every ARRAY parameter. Keep the
+  // flexible deal-line shape while still emitting a valid declaration.
+  const normalizedProperties = { ...properties };
+  if (normalizedProperties.items?.type === 'ARRAY' && !normalizedProperties.items.items) {
+    normalizedProperties.items = { ...normalizedProperties.items, items: { type: 'OBJECT', properties: {} } };
+  }
+  return { name, description, parameters: { type: 'OBJECT', properties: normalizedProperties, required } };
+}
 const text = (v) => String(v ?? '').trim();
 
 module.exports = {
