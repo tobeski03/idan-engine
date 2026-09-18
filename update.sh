@@ -25,7 +25,12 @@ echo -e ""
 # ── Pull latest code ──────────────────────────────────────────────────────────
 if [[ -d "${SCRIPT_DIR}/.git" ]]; then
   info "Pulling latest from remote..."
-  git -C "${SCRIPT_DIR}" pull --rebase
+  # Termux creates local runtime edits (market data, package-lock changes,
+  # native build scripts). Preserve tracked edits while still allowing the
+  # updater to receive the latest engine code.
+  if ! git -C "${SCRIPT_DIR}" pull --rebase --autostash; then
+    warn "Git update could not be applied; keeping the current engine code."
+  fi
   success "Code updated."
 else
   warn "No .git directory found at ${SCRIPT_DIR} — skipping git pull."
