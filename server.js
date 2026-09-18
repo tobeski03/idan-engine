@@ -1100,6 +1100,7 @@ This conversation came from the owner's own WhatsApp account. Admin/device actio
 
   const requestUrl = `${apiBaseUrl}/api/gemini/generate`;
   const requestBody = {
+    provider: 'gemini',
     model: engineConfig.geminiModel || AI_MODEL,
     systemInstruction,
     contents,
@@ -1172,6 +1173,7 @@ async function generateScraperGeminiReply(systemInstruction, promptText) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
+      provider: 'gemini',
       model: engineConfig.geminiModel || AI_MODEL,
       systemInstruction,
       contents,
