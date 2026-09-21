@@ -2458,6 +2458,10 @@ async function handleYouTube(args) {
         // occupy the scrollable content area above the navigation bar.
         if (y < 180 || y > 1500) continue;
         await executeShell(`input tap ${x} ${y}`).catch(() => { });
+        // Respect the user's explicit request to play even when YouTube's
+        // autoplay preference is disabled.
+        await new Promise((resolve) => setTimeout(resolve, 700));
+        await executeShell('input keyevent 126').catch(() => { });
         return { ok: true, message: `Opened YouTube and started the first result for “${query}”.` };
       }
     }
