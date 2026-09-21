@@ -2134,6 +2134,16 @@ function checkAdbStatus() {
 }
 
 function startAdbManager() {
+  // The Android/Termux engine does not need to discover its own USB ADB
+  // connection. When wireless debugging is disabled, scanning the entire
+  // 30k-65k port range every 30 seconds burns a full CPU core and makes the
+  // mobile app feel slow. Desktop users can opt in when they need this
+  // integration, and Android users can opt in explicitly as well.
+  const adbDiscoveryEnabled = String(process.env.IDAN_ENABLE_ADB_DISCOVERY || '').toLowerCase() === 'true';
+  if (process.platform !== 'win32' && !adbDiscoveryEnabled) {
+    appendLog('ADB discovery disabled on non-Windows runtime; enable IDAN_ENABLE_ADB_DISCOVERY=true to opt in.');
+    return;
+  }
   // Run initial check
   checkAdbStatus();
   // Check every 30 seconds
