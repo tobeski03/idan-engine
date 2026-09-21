@@ -2166,6 +2166,7 @@ async function executeShell(command) {
 
   const ADB_REQUIRED_CMDS = ['dumpsys', 'getprop', 'am', 'pm', 'cmd', 'svc', 'settings', 'input', 'monkey'];
   const firstWord = command.trim().split(/\s+/)[0];
+  const runningInTermux = Boolean(process.env.PREFIX && process.env.PREFIX.includes('/com.termux/'));
 
   if (process.platform === 'win32') {
     const win32AdbCmds = [...ADB_REQUIRED_CMDS, 'termux-flashlight', 'termux-wifi-enable', 'termux-volume'];
@@ -2176,7 +2177,7 @@ async function executeShell(command) {
       cmd = 'cmd.exe';
       args = ['/c', command];
     }
-  } else {
+  } else if (!runningInTermux) {
     // Linux/Termux: route privileged commands to adb shell
     if (ADB_REQUIRED_CMDS.includes(firstWord)) {
       cmd = 'adb';
@@ -2424,12 +2425,35 @@ async function handleWhatsApp(args) {
   };
 }
 
-function handleYouTube(args) {
+async function handleYouTube(args) {
   const query = normalizeText(args.query || args.url || '');
-  return {
-    action: 'open-url',
-    url: query.startsWith('http') ? query : `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`,
-  };
+  if (!query) return { ok: false, error: 'A song, video, or search query is required.' };
+
+  // Use YouTube's Android deep link so the installed YouTube app opens instead
+  // of leaving the request in Chrome. The app can then continue playback in
+  // the background/miniplayer.
+  const target = query.startsWith('http')
+    ? query
+    : `vnd.youtube://results?search_query=${encodeURIComponent(query)}`;
+  const escapedTarget = target.replace(/'/g, "'\\''");
+  await executeShell(`am start -a android.intent.action.VIEW -d '${escapedTarget}'`).catch((error) => {
+    appendLog(`[YouTube] Deep-link launch failed: ${error.message}`);
+  });
+
+  if (args.playFirst !== false && !query.startsWith('http')) {
+    await new Promise((resolve) => setTimeout(resolve, 2200));
+    const xml = await dumpAndroidUI();
+    const resultRegex = /<node[^>]*content-desc="([^"]*(?:views|play)[^"]*)"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"[^>]*clickable="true"/gi;
+    const match = resultRegex.exec(xml);
+    if (match) {
+      const x = Math.floor((Number(match[2]) + Number(match[4])) / 2);
+      const y = Math.floor((Number(match[3]) + Number(match[5])) / 2);
+      await executeShell(`input tap ${x} ${y}`).catch(() => { });
+      return { ok: true, message: `Opened YouTube and started the first result for “${query}”.` };
+    }
+  }
+
+  return { ok: true, message: `Opened YouTube for “${query}”.` };
 }
 
 function createConnectorMessage(type, args) {
@@ -2523,10 +2547,8 @@ function safeEval(code, ctx) {
 async function dumpAndroidUI() {
   try {
     await executeShell('uiautomator dump /data/local/tmp/uidump.xml 2>/dev/null || adb shell uiautomator dump /data/local/tmp/uidump.xml').catch(() => { });
-    const res = await executeShell('cat /data/local/tmp/uidump.xml 2>/dev/null || adb shell cat /data/local/tmp/uidump.xml');
-    if (res.ok && res.stdout) {
-      return res.stdout;
-    }
+    const output = await executeShell('cat /data/local/tmp/uidump.xml 2>/dev/null || adb shell cat /data/local/tmp/uidump.xml');
+    return String(output || '');
   } catch (err) {
     appendLog(`dumpAndroidUI failed: ${err.message}`);
   }
