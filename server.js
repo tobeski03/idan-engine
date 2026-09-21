@@ -1048,9 +1048,20 @@ async function generateGeminiReply(thread, context = {}) {
   }
 
   const googleAccessToken = await ensureAppAccessToken();
-  const history = Array.isArray(thread?.messages)
+  let history = Array.isArray(thread?.messages)
     ? thread.messages.slice(-AI_CONTEXT_MESSAGES).filter((m) => m.role === 'user' || m.role === 'assistant' || m.role === 'function')
     : [];
+
+  // A crashed/aborted tool loop can leave old model/function turns in the
+  // thread. Replaying those turns makes Gemini try to finish stale work,
+  // which can cause empty-content errors or a 20s timeout. Start from the
+  // latest user turn and keep only the current turn's tool exchange. This
+  // still preserves model -> function responses during the active loop while
+  // preventing abandoned tool chains from poisoning the next request.
+  const latestUserIndex = [...history].map((message) => message.role).lastIndexOf('user');
+  if (latestUserIndex >= 0) {
+    history = history.slice(latestUserIndex);
+  }
   const rawContents = history.map((message) => chatContentFromMessage(message));
   const contents = sanitizeContentsForGemini(rawContents);
 
