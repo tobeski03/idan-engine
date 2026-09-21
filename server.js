@@ -2441,15 +2441,23 @@ async function handleYouTube(args) {
   });
 
   if (args.playFirst !== false && !query.startsWith('http')) {
-    await new Promise((resolve) => setTimeout(resolve, 2200));
-    const xml = await dumpAndroidUI();
-    const resultRegex = /<node[^>]*content-desc="([^"]*(?:views|play)[^"]*)"[^>]*bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"[^>]*clickable="true"/gi;
-    const match = resultRegex.exec(xml);
-    if (match) {
-      const x = Math.floor((Number(match[2]) + Number(match[4])) / 2);
-      const y = Math.floor((Number(match[3]) + Number(match[5])) / 2);
-      await executeShell(`input tap ${x} ${y}`).catch(() => { });
-      return { ok: true, message: `Opened YouTube and started the first result for “${query}”.` };
+    for (let attempt = 0; attempt < 5; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, attempt === 0 ? 2200 : 900));
+      const xml = await dumpAndroidUI();
+      const nodes = xml.match(/<node\b[^>]*>/gi) || [];
+      for (const node of nodes) {
+        const clickable = /clickable="true"/i.test(node);
+        const desc = node.match(/content-desc="([^"]*)"/i)?.[1] || '';
+        const bounds = node.match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/i);
+        if (!clickable || !bounds || !/(?:views|play)/i.test(desc)) continue;
+        const x = Math.floor((Number(bounds[1]) + Number(bounds[3])) / 2);
+        const y = Math.floor((Number(bounds[2]) + Number(bounds[4])) / 2);
+        // Ignore bottom navigation and mini-player controls; video results
+        // occupy the scrollable content area above the navigation bar.
+        if (y < 180 || y > 1500) continue;
+        await executeShell(`input tap ${x} ${y}`).catch(() => { });
+        return { ok: true, message: `Opened YouTube and started the first result for “${query}”.` };
+      }
     }
   }
 
