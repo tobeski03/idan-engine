@@ -1063,7 +1063,15 @@ async function generateGeminiReply(thread, context = {}) {
     history = history.slice(latestUserIndex);
   }
   const rawContents = history.map((message) => chatContentFromMessage(message));
-  const contents = sanitizeContentsForGemini(rawContents);
+  const sanitizedContents = sanitizeContentsForGemini(rawContents);
+  const latestRawUser = [...rawContents].reverse().find((turn) => turn?.role === 'user');
+  // Never send an empty contents array. A previously interrupted tool loop
+  // may be impossible to reconstruct; the latest user message is still a
+  // valid request and lets the agent recover instead of returning a Gemini
+  // "contents is not specified" error.
+  const contents = sanitizedContents.length > 0
+    ? sanitizedContents
+    : (latestRawUser ? [latestRawUser] : []);
 
   const declarations = getAllToolDeclarations();
   const toolsPayload = declarations.length > 0 ? [{ functionDeclarations: declarations }] : undefined;
