@@ -2449,7 +2449,9 @@ async function handleYouTube(args) {
         const clickable = /clickable="true"/i.test(node);
         const desc = node.match(/content-desc="([^"]*)"/i)?.[1] || '';
         const bounds = node.match(/bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/i);
-        if (!clickable || !bounds || !/(?:views|play)/i.test(desc)) continue;
+        const looksLikeResult = /views/i.test(desc) && /play video/i.test(desc);
+        const isNonResultControl = /minimi[sz]ed player|play short|close minimi[sz]ed/i.test(desc);
+        if (!clickable || !bounds || !looksLikeResult || isNonResultControl) continue;
         const x = Math.floor((Number(bounds[1]) + Number(bounds[3])) / 2);
         const y = Math.floor((Number(bounds[2]) + Number(bounds[4])) / 2);
         // Ignore bottom navigation and mini-player controls; video results
